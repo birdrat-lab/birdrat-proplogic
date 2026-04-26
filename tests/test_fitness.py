@@ -1,8 +1,8 @@
 from birdrat_proplogic.config import ProplogicConfig
-from birdrat_proplogic.fitness import best_region_similarity, depth_penalty, formula_similarity, total_fitness, total_formula_size
+from birdrat_proplogic.fitness import best_region_similarity, cd_progress, depth_penalty, formula_similarity, total_fitness, total_formula_size
 from birdrat_proplogic.formula import Atom, Imp, Meta, Not
 from birdrat_proplogic.goals import extract_goals
-from birdrat_proplogic.proof import Ax1, CD
+from birdrat_proplogic.proof import Ax1, CD, Invalid, conclusion
 from birdrat_proplogic.surface import SAtom, SImp
 
 
@@ -70,6 +70,58 @@ def test_total_fitness_penalizes_invalid_proof() -> None:
 
     assert not result.valid
     assert result.score < 0
+
+
+def test_axiom_only_similarity_is_capped_below_valid_cd_candidate() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    target = Imp(Not(Imp(a, Not(b))), Not(Imp(b, Not(a))))
+    similar_axiom = Ax1(Not(Imp(b, Not(a))), Not(Imp(a, Not(b))))
+    valid_cd = CD(Ax1(Meta("?p"), Meta("?q")), Ax1(a, b))
+
+    axiom_result = total_fitness(similar_axiom, target)
+    cd_result = total_fitness(valid_cd, target)
+
+    assert axiom_result.cd_steps == 0
+    assert axiom_result.similarity > 0.5
+    assert cd_result.cd_steps > 0
+    assert cd_result.score > axiom_result.score
+
+
+def test_exact_region_still_beats_non_exact_cd() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    region_proof = Ax1(a, b)
+    valid_cd = CD(Ax1(Meta("?p"), Meta("?q")), Ax1(a, b))
+    target = Imp(b, b)
+    regions = extract_goals(SImp(SAtom("a"), SImp(SAtom("b"), SAtom("a"))))
+
+    region_result = total_fitness(region_proof, target, regions)
+    cd_result = total_fitness(valid_cd, target, regions)
+
+    assert region_result.exact_region is not None
+    assert not cd_result.exact_target
+    assert cd_result.exact_region is None
+    assert region_result.score > cd_result.score
+
+
+def test_cd_progress_is_positive_when_cd_conclusion_is_closer_than_parents() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    proof = CD(Ax1(Meta("?p"), Meta("?q")), Ax1(a, b))
+    target = conclusion(proof)
+
+    assert not isinstance(target, Invalid)
+    assert cd_progress(proof, target) > 0.0
+
+
+def test_cd_progress_is_zero_when_cd_does_not_improve_similarity() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    proof = CD(Ax1(Meta("?p"), Meta("?q")), Ax1(a, b))
+    target = Imp(Not(Imp(a, Not(b))), Not(Imp(b, Not(a))))
+
+    assert cd_progress(proof, target) == 0.0
 
 
 def test_total_formula_size_counts_axiom_arguments() -> None:

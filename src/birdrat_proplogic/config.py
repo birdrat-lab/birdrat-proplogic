@@ -24,6 +24,9 @@ class FitnessConfig:
     proof_size_penalty: float = 1.0
     formula_size_penalty: float = 0.1
     invalid_proof_penalty: float = 100_000.0
+    axiom_only_similarity_cap: float = 50.0
+    cd_existence_bonus: float = 250.0
+    cd_progress_bonus: float = 500.0
     adaptive_cd_depth_threshold: int = 8
     depth_penalty_limit: float = 100.0
     depth_penalty_steepness: float = 1.5

@@ -66,11 +66,16 @@ def total_fitness(
 
     if exact_target:
         score = fitness_config.exact_success_base + fitness_config.exact_target_bonus
+    elif exact_region is not None:
+        score = fitness_config.exact_region_bonus * exact_region.weight
+        score += fitness_config.symbolic_similarity_weight * similarity
+    elif steps == 0:
+        score = fitness_config.axiom_only_similarity_cap * similarity
     else:
         score = 0.0
-        if exact_region is not None:
-            score += fitness_config.exact_region_bonus * exact_region.weight
         score += fitness_config.symbolic_similarity_weight * similarity
+        score += fitness_config.cd_existence_bonus
+        score += fitness_config.cd_progress_bonus * cd_progress(proof, target, regions)
 
     score -= _complexity_penalty(steps, depth, nodes, formulas, fitness_config)
 
@@ -99,6 +104,27 @@ def best_region_similarity(candidate: Formula, regions: tuple[Goal, ...] = ()) -
     if not regions:
         return 0.0
     return max(formula_similarity(candidate, region.core_theorem()) for region in regions)
+
+
+def cd_progress(proof: Proof, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
+    if not isinstance(proof, CD):
+        return 0.0
+
+    proof_conclusion = conclusion(proof)
+    major_conclusion = conclusion(proof.major)
+    minor_conclusion = conclusion(proof.minor)
+    if isinstance(proof_conclusion, Invalid):
+        return 0.0
+
+    child_similarity = best_similarity(proof_conclusion, target, regions)
+    parent_similarities = [
+        best_similarity(item, target, regions)
+        for item in (major_conclusion, minor_conclusion)
+        if not isinstance(item, Invalid)
+    ]
+    if not parent_similarities:
+        return child_similarity
+    return max(0.0, child_similarity - max(parent_similarities))
 
 
 @lru_cache(maxsize=None)
