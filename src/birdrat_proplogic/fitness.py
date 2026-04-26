@@ -17,6 +17,8 @@ class FitnessResult:
     exact_target: bool
     exact_region: Goal | None
     similarity: float
+    target_similarity: float
+    region_similarity: float
     cd_steps: int
     cd_depth: int
     proof_size: int
@@ -46,6 +48,8 @@ def total_fitness(
             exact_target=False,
             exact_region=None,
             similarity=0.0,
+            target_similarity=0.0,
+            region_similarity=0.0,
             cd_steps=steps,
             cd_depth=depth,
             proof_size=nodes,
@@ -55,7 +59,9 @@ def total_fitness(
 
     exact_target = proof_conclusion == target
     exact_region = _matching_region(proof_conclusion, regions)
-    similarity = best_similarity(proof_conclusion, target, regions)
+    target_similarity = formula_similarity(proof_conclusion, target)
+    region_similarity = best_region_similarity(proof_conclusion, regions)
+    similarity = max(target_similarity, region_similarity)
 
     if exact_target:
         score = fitness_config.exact_success_base + fitness_config.exact_target_bonus
@@ -73,6 +79,8 @@ def total_fitness(
         exact_target=exact_target,
         exact_region=exact_region,
         similarity=similarity,
+        target_similarity=target_similarity,
+        region_similarity=region_similarity,
         cd_steps=steps,
         cd_depth=depth,
         proof_size=nodes,
@@ -84,6 +92,12 @@ def total_fitness(
 def best_similarity(candidate: Formula, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
     targets = (target,) + tuple(region.core_theorem() for region in regions)
     return max(formula_similarity(candidate, item) for item in targets)
+
+
+def best_region_similarity(candidate: Formula, regions: tuple[Goal, ...] = ()) -> float:
+    if not regions:
+        return 0.0
+    return max(formula_similarity(candidate, region.core_theorem()) for region in regions)
 
 
 def formula_similarity(left: Formula, right: Formula) -> float:

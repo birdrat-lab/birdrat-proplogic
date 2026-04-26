@@ -1,0 +1,38 @@
+{
+  "entries": [
+    {
+      "formula": {
+        "left": {
+          "name": "a",
+          "type": "Atom"
+        },
+        "right": {
+          "left": {
+            "name": "b",
+            "type": "Atom"
+          },
+          "right": {
+            "name": "a",
+            "type": "Atom"
+          },
+          "type": "Imp"
+        },
+        "type": "Imp"
+      },
+      "proofs": [
+        {
+          "p": {
+            "name": "a",
+            "type": "Atom"
+          },
+          "q": {
+            "name": "b",
+            "type": "Atom"
+          },
+          "type": "Ax1"
+        }
+      ]
+    }
+  ],
+  "version": 1
+}

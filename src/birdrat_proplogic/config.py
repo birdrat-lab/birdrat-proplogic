@@ -39,10 +39,35 @@ class MutationConfig:
 
 
 @dataclass(frozen=True)
+class EvolutionConfig:
+    population_size: int = 50
+    max_generations: int = 100
+    elite_count: int = 4
+    tournament_size: int = 3
+    crossover_rate: float = 0.7
+    mutation_rate: float = 0.9
+    initial_proof_depth: int = 1
+    max_proof_depth: int = 8
+    iterative_deepening_budget: int = 10
+    iterative_deepening_scale: float = 1.5
+    stop_on_exact: bool = True
+
+
+@dataclass(frozen=True)
+class ArchiveConfig:
+    max_proofs_per_formula: int = 5
+    path: str | None = ".birdrat/archive.json"
+    load_on_start: bool = True
+    save_on_finish: bool = True
+
+
+@dataclass(frozen=True)
 class ProplogicConfig:
     regions: RegionConfig = field(default_factory=RegionConfig)
     fitness: FitnessConfig = field(default_factory=FitnessConfig)
     mutation: MutationConfig = field(default_factory=MutationConfig)
+    evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
+    archive: ArchiveConfig = field(default_factory=ArchiveConfig)
 
 
 DEFAULT_CONFIG = ProplogicConfig()

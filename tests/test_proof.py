@@ -1,5 +1,5 @@
 from birdrat_proplogic.formula import Atom, Imp, Meta, Not
-from birdrat_proplogic.proof import Ax1, Ax2, Ax3, CD, Invalid, cd_depth, cd_steps, conclusion, proof_size
+from birdrat_proplogic.proof import Ax1, Ax2, Ax3, CD, Invalid, cd_depth, cd_steps, conclusion, proof_pretty, proof_size
 
 
 def test_p2_axiom_conclusions() -> None:
@@ -37,3 +37,20 @@ def test_proof_metrics() -> None:
     assert cd_steps(proof) == 2
     assert cd_depth(proof) == 2
     assert proof_size(proof) == 5
+
+
+def test_proof_pretty_includes_axiom_and_conclusion() -> None:
+    proof = Ax1(Atom("a"), Atom("b"))
+
+    assert proof_pretty(proof) == "1. Ax1 (p := a, q := b) proves a → b → a"
+
+
+def test_proof_pretty_linearizes_cd_steps() -> None:
+    proof = CD(Ax1(Meta("?p"), Meta("?q")), Ax1(Atom("a"), Atom("b")))
+
+    lines = proof_pretty(proof).splitlines()
+
+    assert lines[0].startswith("1. Ax1")
+    assert lines[1].startswith("2. Ax1")
+    assert lines[2].startswith("3. CD")
+    assert "steps 1 and 2" in lines[2]

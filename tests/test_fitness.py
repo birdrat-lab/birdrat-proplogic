@@ -1,5 +1,5 @@
 from birdrat_proplogic.config import ProplogicConfig
-from birdrat_proplogic.fitness import depth_penalty, formula_similarity, total_fitness, total_formula_size
+from birdrat_proplogic.fitness import best_region_similarity, depth_penalty, formula_similarity, total_fitness, total_formula_size
 from birdrat_proplogic.formula import Atom, Imp, Meta, Not
 from birdrat_proplogic.goals import extract_goals
 from birdrat_proplogic.proof import Ax1, CD
@@ -54,6 +54,12 @@ def test_total_fitness_detects_region_match() -> None:
 
     assert result.exact_region is not None
     assert result.valid
+    assert result.region_similarity == 1.0
+    assert result.target_similarity < 1.0
+
+
+def test_best_region_similarity_is_zero_without_regions() -> None:
+    assert best_region_similarity(Atom("a"), ()) == 0.0
 
 
 def test_total_fitness_penalizes_invalid_proof() -> None:
