@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+from random import Random
+
+from birdrat_proplogic.config import DEFAULT_CONFIG, MutationConfig, ProplogicConfig
+from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size
+from birdrat_proplogic.proof import Ax1, Ax2, Ax3, CD, Proof
+
+
+def mutate_formula(
+    formula: Formula,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+) -> Formula:
+    random = _rng(rng)
+    mutation_config = config.mutation
+    candidates = _formula_mutation_candidates(formula, random, mutation_config)
+    bounded = tuple(item for item in candidates if formula_size(item) <= mutation_config.max_formula_size)
+    if not bounded:
+        return formula
+    return random.choice(bounded)
+
+
+def random_formula(
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+    depth: int | None = None,
+) -> Formula:
+    random = _rng(rng)
+    mutation_config = config.mutation
+    remaining_depth = mutation_config.random_formula_depth if depth is None else depth
+    if remaining_depth <= 0:
+        return _random_leaf_formula(random, mutation_config)
+
+    constructors = ("leaf", "not", "imp")
+    choice = random.choice(constructors)
+    if choice == "leaf":
+        return _random_leaf_formula(random, mutation_config)
+    if choice == "not":
+        return Not(random_formula(random, config, remaining_depth - 1))
+    return Imp(
+        random_formula(random, config, remaining_depth - 1),
+        random_formula(random, config, remaining_depth - 1),
+    )
+
+
+def mutate_proof(
+    proof: Proof,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+) -> Proof:
+    random = _rng(rng)
+    operations = [
+        replace_axiom_node,
+        mutate_axiom_formula_argument,
+        replace_subtree,
+        wrap_cd,
+    ]
+    if isinstance(proof, CD):
+        operations.extend([replace_cd_child, swap_cd_children])
+    return random.choice(operations)(proof, random, config)
+
+
+def random_proof(
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+    depth: int | None = None,
+) -> Proof:
+    random = _rng(rng)
+    remaining_depth = config.mutation.random_proof_depth if depth is None else depth
+    if remaining_depth <= 0:
+        return _random_axiom(random, config)
+    if random.random() < 0.5:
+        return _random_axiom(random, config)
+    return CD(
+        random_proof(random, config, remaining_depth - 1),
+        random_proof(random, config, remaining_depth - 1),
+    )
+
+
+def replace_axiom_node(
+    proof: Proof,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+) -> Proof:
+    random = _rng(rng)
+    match proof:
+        case Ax1(p, q):
+            return random.choice((Ax1(p, q), Ax2(p, q, random_formula(random, config)), Ax3(p, q)))
+        case Ax2(p, q, r):
+            return random.choice((Ax1(p, q), Ax2(p, q, r), Ax3(p, q)))
+        case Ax3(p, q):
+            return random.choice((Ax1(p, q), Ax2(p, q, random_formula(random, config)), Ax3(p, q)))
+        case CD(major, minor):
+            if random.random() < 0.5:
+                return CD(replace_axiom_node(major, random, config), minor)
+            return CD(major, replace_axiom_node(minor, random, config))
+
+
+def mutate_axiom_formula_argument(
+    proof: Proof,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+) -> Proof:
+    random = _rng(rng)
+    match proof:
+        case Ax1(p, q):
+            if random.random() < 0.5:
+                return Ax1(mutate_formula(p, random, config), q)
+            return Ax1(p, mutate_formula(q, random, config))
+        case Ax2(p, q, r):
+            index = random.randrange(3)
+            if index == 0:
+                return Ax2(mutate_formula(p, random, config), q, r)
+            if index == 1:
+                return Ax2(p, mutate_formula(q, random, config), r)
+            return Ax2(p, q, mutate_formula(r, random, config))
+        case Ax3(p, q):
+            if random.random() < 0.5:
+                return Ax3(mutate_formula(p, random, config), q)
+            return Ax3(p, mutate_formula(q, random, config))
+        case CD(major, minor):
+            if random.random() < 0.5:
+                return CD(mutate_axiom_formula_argument(major, random, config), minor)
+            return CD(major, mutate_axiom_formula_argument(minor, random, config))
+
+
+def replace_subtree(
+    proof: Proof,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+) -> Proof:
+    random = _rng(rng)
+    if not isinstance(proof, CD) or random.random() < 0.33:
+        return random_proof(random, config)
+    if random.random() < 0.5:
+        return CD(replace_subtree(proof.major, random, config), proof.minor)
+    return CD(proof.major, replace_subtree(proof.minor, random, config))
+
+
+def wrap_cd(
+    proof: Proof,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+) -> Proof:
+    random = _rng(rng)
+    other = random_proof(random, config, max(0, config.mutation.random_proof_depth - 1))
+    if random.random() < 0.5:
+        return CD(proof, other)
+    return CD(other, proof)
+
+
+def replace_cd_child(
+    proof: Proof,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+) -> Proof:
+    random = _rng(rng)
+    if not isinstance(proof, CD):
+        return proof
+    child = random_proof(random, config)
+    if random.random() < 0.5:
+        return CD(child, proof.minor)
+    return CD(proof.major, child)
+
+
+def swap_cd_children(
+    proof: Proof,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+) -> Proof:
+    if not isinstance(proof, CD):
+        return proof
+    return CD(proof.minor, proof.major)
+
+
+def _formula_mutation_candidates(
+    formula: Formula,
+    rng: Random,
+    config: MutationConfig,
+) -> tuple[Formula, ...]:
+    match formula:
+        case Atom():
+            replacement = Atom(rng.choice(config.atom_names))
+            random_leaf = _random_leaf_formula(rng, config)
+            return (
+                replacement,
+                random_leaf,
+                Not(formula),
+                Imp(formula, random_leaf),
+                Imp(random_leaf, formula),
+            )
+        case Meta():
+            replacement = Meta(rng.choice(config.meta_names))
+            random_leaf = _random_leaf_formula(rng, config)
+            return (
+                replacement,
+                random_leaf,
+                Not(formula),
+                Imp(formula, random_leaf),
+                Imp(random_leaf, formula),
+            )
+        case Not(body):
+            return (
+                Not(mutate_formula(body, rng, ProplogicConfig(mutation=config))),
+                body,
+                Imp(formula, _random_leaf_formula(rng, config)),
+                Imp(_random_leaf_formula(rng, config), formula),
+            )
+        case Imp(left, right):
+            return (
+                Imp(mutate_formula(left, rng, ProplogicConfig(mutation=config)), right),
+                Imp(left, mutate_formula(right, rng, ProplogicConfig(mutation=config))),
+                Not(formula),
+                left,
+                right,
+            )
+
+
+def _random_axiom(rng: Random, config: ProplogicConfig) -> Proof:
+    p = random_formula(rng, config)
+    q = random_formula(rng, config)
+    choice = rng.choice((1, 2, 3))
+    if choice == 1:
+        return Ax1(p, q)
+    if choice == 2:
+        return Ax2(p, q, random_formula(rng, config))
+    return Ax3(p, q)
+
+
+def _random_leaf_formula(rng: Random, config: MutationConfig) -> Formula:
+    if rng.random() < 0.75:
+        return Atom(rng.choice(config.atom_names))
+    return Meta(rng.choice(config.meta_names))
+
+
+def _rng(rng: Random | None) -> Random:
+    if rng is None:
+        return Random()
+    return rng
