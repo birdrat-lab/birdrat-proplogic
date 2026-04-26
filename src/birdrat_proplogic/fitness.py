@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from math import exp
 
 from birdrat_proplogic.config import DEFAULT_CONFIG, FitnessConfig, ProplogicConfig
@@ -100,6 +101,7 @@ def best_region_similarity(candidate: Formula, regions: tuple[Goal, ...] = ()) -
     return max(formula_similarity(candidate, region.core_theorem()) for region in regions)
 
 
+@lru_cache(maxsize=None)
 def formula_similarity(left: Formula, right: Formula) -> float:
     if left == right:
         return 1.0
@@ -126,6 +128,7 @@ def depth_penalty(
     return lam * (2.0 / (1.0 + exp(-k * excess)) - 1.0)
 
 
+@lru_cache(maxsize=None)
 def total_formula_size(proof: Proof) -> int:
     match proof:
         case Ax1(p, q):

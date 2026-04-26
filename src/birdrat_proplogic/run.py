@@ -62,6 +62,9 @@ def render_search_report(report: SearchReport) -> str:
             f"  archive formulas: {len(result.archive)}",
             f"  archive proofs: {archive_size(result.archive)}",
             "",
+            "diagnostics:",
+            *_diagnostic_lines(result),
+            "",
             "best candidate:",
             f"  exact target: {_found_text(best_fitness.exact_target)}",
             f"  valid: {best_fitness.valid}",
@@ -103,6 +106,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-proof-depth", type=int)
     parser.add_argument("--iterative-deepening-budget", type=int)
     parser.add_argument("--iterative-deepening-scale", type=float)
+    parser.add_argument("--diagnostics-interval", type=int)
     parser.add_argument("--archive-path")
     parser.add_argument("--no-archive", action="store_true")
     parser.add_argument("--no-load-archive", action="store_true")
@@ -136,6 +140,7 @@ def _config_from_args(args: argparse.Namespace) -> ProplogicConfig:
         ("max_proof_depth", "max_proof_depth"),
         ("iterative_deepening_budget", "iterative_deepening_budget"),
         ("iterative_deepening_scale", "iterative_deepening_scale"),
+        ("diagnostics_interval", "diagnostics_interval"),
     ):
         value = getattr(args, arg_name)
         if value is not None:
@@ -167,6 +172,26 @@ def _unique_regions_by_theorem(regions: tuple[Goal, ...]) -> tuple[Goal, ...]:
         seen.add(theorem)
         unique.append(region)
     return tuple(unique)
+
+
+def _diagnostic_lines(result: EvolutionResult) -> list[str]:
+    if not result.history:
+        return ["  none"]
+    interval = max(1, result.diagnostics_interval)
+    selected = [result.history[0]]
+    selected.extend(item for item in result.history[1:-1] if item.generation % interval == 0)
+    if result.history[-1] not in selected:
+        selected.append(result.history[-1])
+    return [
+        (
+            f"  gen {item.generation}: depth={item.active_proof_depth}, "
+            f"valid={item.valid_fraction:.2f}, exact_target={item.exact_target_count}, "
+            f"exact_region={item.exact_region_count}, best={item.best_score:.3f}, "
+            f"mean_size={item.mean_proof_size:.2f}, mean_formula={item.mean_formula_size:.2f}, "
+            f"best_conclusion={item.best_conclusion}"
+        )
+        for item in selected
+    ]
 
 
 def _found_text(found: bool) -> str:

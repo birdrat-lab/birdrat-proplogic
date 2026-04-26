@@ -21,6 +21,8 @@ def test_evolve_returns_population_and_history() -> None:
     assert len(result.history) == 3
     assert isinstance(result.archive, dict)
     assert isinstance(result.best.proof, Proof)
+    assert result.history[0].valid_fraction > 0.0
+    assert result.history[0].best_conclusion
 
 
 def test_evolve_is_deterministic_with_seed() -> None:
@@ -55,6 +57,7 @@ def test_iterative_deepening_updates_active_depth() -> None:
             max_proof_depth=3,
             iterative_deepening_budget=2,
             iterative_deepening_scale=1.0,
+            diagnostics_interval=2,
         )
     )
 

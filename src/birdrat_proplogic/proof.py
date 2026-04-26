@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TypeAlias
 
 from birdrat_proplogic.formula import Formula, Imp, Not, pretty
@@ -52,6 +53,7 @@ class ProofStep:
     premises: tuple[int, ...] = ()
 
 
+@lru_cache(maxsize=None)
 def conclusion(proof: Proof) -> Conclusion:
     match proof:
         case Ax1(p, q):
@@ -80,6 +82,7 @@ def is_valid(proof: Proof) -> bool:
     return not isinstance(conclusion(proof), Invalid)
 
 
+@lru_cache(maxsize=None)
 def cd_steps(proof: Proof) -> int:
     match proof:
         case Ax1() | Ax2() | Ax3():
@@ -88,6 +91,7 @@ def cd_steps(proof: Proof) -> int:
             return 1 + cd_steps(major) + cd_steps(minor)
 
 
+@lru_cache(maxsize=None)
 def cd_depth(proof: Proof) -> int:
     match proof:
         case Ax1() | Ax2() | Ax3():
@@ -96,6 +100,7 @@ def cd_depth(proof: Proof) -> int:
             return 1 + max(cd_depth(major), cd_depth(minor))
 
 
+@lru_cache(maxsize=None)
 def proof_size(proof: Proof) -> int:
     match proof:
         case Ax1() | Ax2() | Ax3():

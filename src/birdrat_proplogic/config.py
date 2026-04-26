@@ -50,6 +50,7 @@ class EvolutionConfig:
     max_proof_depth: int = 8
     iterative_deepening_budget: int = 10
     iterative_deepening_scale: float = 1.5
+    diagnostics_interval: int = 10
     stop_on_exact: bool = True
 
 

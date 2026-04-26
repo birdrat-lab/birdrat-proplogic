@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TypeAlias
 
 
@@ -28,6 +29,7 @@ class Imp:
 Formula: TypeAlias = Atom | Meta | Not | Imp
 
 
+@lru_cache(maxsize=None)
 def formula_size(formula: Formula) -> int:
     match formula:
         case Atom() | Meta():
@@ -70,3 +72,24 @@ def contains_meta(formula: Formula) -> bool:
         case Imp(left, right):
             return contains_meta(left) or contains_meta(right)
 
+
+@lru_cache(maxsize=None)
+def subformulas(formula: Formula) -> tuple[Formula, ...]:
+    formulas: list[Formula] = []
+    _add_subformulas(formula, formulas, set())
+    return tuple(formulas)
+
+
+def _add_subformulas(formula: Formula, formulas: list[Formula], seen: set[Formula]) -> None:
+    if formula in seen:
+        return
+    seen.add(formula)
+    formulas.append(formula)
+    match formula:
+        case Atom() | Meta():
+            return
+        case Not(body):
+            _add_subformulas(body, formulas, seen)
+        case Imp(left, right):
+            _add_subformulas(left, formulas, seen)
+            _add_subformulas(right, formulas, seen)

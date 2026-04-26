@@ -44,6 +44,8 @@ def test_render_search_report_mentions_best_candidate_and_proof() -> None:
 
     assert "surface target:\n  a ∧ b → b ∧ a" in output
     assert "active depth:" in output
+    assert "diagnostics:" in output
+    assert "valid=" in output
     assert "best candidate:" in output
     assert "target similarity:" in output
     assert "best region similarity:" in output
@@ -61,6 +63,8 @@ def test_config_from_args_applies_cli_overrides() -> None:
             "3",
             "--archive-path",
             "tmp/archive.json",
+            "--diagnostics-interval",
+            "5",
             "--no-load-archive",
         ]
     )
@@ -69,5 +73,6 @@ def test_config_from_args_applies_cli_overrides() -> None:
 
     assert config.evolution.population_size == 7
     assert config.evolution.max_generations == 3
+    assert config.evolution.diagnostics_interval == 5
     assert config.archive.path == "tmp/archive.json"
     assert not config.archive.load_on_start

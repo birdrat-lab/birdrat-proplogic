@@ -7,11 +7,12 @@ from birdrat_proplogic.archive import ProofArchive, empty_archive, update_archiv
 from birdrat_proplogic.config import DEFAULT_CONFIG, ProplogicConfig
 from birdrat_proplogic.crossover import crossover_proof
 from birdrat_proplogic.fitness import FitnessResult, total_fitness
+from birdrat_proplogic.formula import Formula, pretty
 from birdrat_proplogic.goals import Goal, extract_goals
 from birdrat_proplogic.lib.archive_json import load_archive_json, save_archive_json
-from birdrat_proplogic.mutate import mutate_proof, random_proof
-from birdrat_proplogic.proof import Proof
-from birdrat_proplogic.formula import Formula
+from birdrat_proplogic.mutate import mutate_proof
+from birdrat_proplogic.proof import Invalid, Proof
+from birdrat_proplogic.seed import formula_pool_from_target, initialize_population_from_target
 from birdrat_proplogic.surface import SurfaceFormula, desugar
 
 
@@ -26,8 +27,16 @@ class GenerationStats:
     generation: int
     active_proof_depth: int
     best_score: float
+    best_conclusion: str
     best_exact: bool
     best_valid: bool
+    valid_fraction: float
+    exact_target_count: int
+    exact_region_count: int
+    mean_cd_steps: float
+    mean_cd_depth: float
+    mean_proof_size: float
+    mean_formula_size: float
 
 
 @dataclass(frozen=True)
@@ -38,6 +47,7 @@ class EvolutionResult:
     population: tuple[Proof, ...]
     best: ScoredProof
     history: tuple[GenerationStats, ...]
+    diagnostics_interval: int
 
 
 def evolve(
@@ -52,9 +62,17 @@ def evolve(
     core_target = desugar(target)
     active_depth = _active_depth(0, config)
     active_config = _config_for_depth(config, active_depth)
+    region_targets = tuple(region.core_theorem() for region in regions)
+    formula_pool = formula_pool_from_target(core_target, region_targets)
     population = tuple(
-        random_proof(random, active_config, depth=active_depth)
-        for _ in range(evolution_config.population_size)
+        initialize_population_from_target(
+            random,
+            core_target,
+            region_targets,
+            evolution_config.population_size,
+            max_formula_depth=active_config.mutation.random_formula_depth,
+            config=active_config,
+        )
     )
     history: list[GenerationStats] = []
     archive = _load_archive(config)
@@ -68,14 +86,14 @@ def evolve(
         scored = _score_population(population, core_target, regions, active_config)
         archive = update_archive(archive, _archive_items(scored), active_config)
         best = max(best, scored[0], key=lambda item: item.fitness.score)
-        history.append(_generation_stats(generation, active_depth, scored[0]))
+        history.append(_generation_stats(generation, active_depth, scored))
 
         if evolution_config.stop_on_exact and scored[0].fitness.exact_target:
             break
 
         elite_count = min(evolution_config.elite_count, evolution_config.population_size)
         elites = tuple(item.proof for item in scored[:elite_count])
-        children = _make_children(scored, active_config, random)
+        children = _make_children(scored, active_config, random, formula_pool)
         population = (elites + children)[: evolution_config.population_size]
 
     final_scored = _score_population(population, core_target, regions, _config_for_depth(config, active_depth))
@@ -89,6 +107,7 @@ def evolve(
         population=population,
         best=best,
         history=tuple(history),
+        diagnostics_interval=evolution_config.diagnostics_interval,
     )
 
 
@@ -96,6 +115,7 @@ def _make_children(
     scored: tuple[ScoredProof, ...],
     config: ProplogicConfig,
     rng: Random,
+    formula_pool: tuple[Formula, ...],
 ) -> tuple[Proof, ...]:
     evolution_config = config.evolution
     child_count = max(0, evolution_config.population_size - evolution_config.elite_count)
@@ -108,7 +128,7 @@ def _make_children(
         else:
             child = parent1
         if rng.random() < evolution_config.mutation_rate:
-            child = mutate_proof(child, rng, config)
+            child = mutate_proof(child, rng, config, formula_pool)
         children.append(child)
     return tuple(children)
 
@@ -165,13 +185,28 @@ def _config_for_depth(config: ProplogicConfig, depth: int) -> ProplogicConfig:
     )
 
 
-def _generation_stats(generation: int, active_depth: int, best: ScoredProof) -> GenerationStats:
+def _generation_stats(generation: int, active_depth: int, scored: tuple[ScoredProof, ...]) -> GenerationStats:
+    best = scored[0]
+    best_conclusion = best.fitness.conclusion
+    if isinstance(best_conclusion, Invalid):
+        best_conclusion_text = f"invalid: {best_conclusion.reason}"
+    else:
+        best_conclusion_text = pretty(best_conclusion)
+    count = len(scored)
     return GenerationStats(
         generation=generation,
         active_proof_depth=active_depth,
         best_score=best.fitness.score,
+        best_conclusion=best_conclusion_text,
         best_exact=best.fitness.exact_target,
         best_valid=best.fitness.valid,
+        valid_fraction=sum(1 for item in scored if item.fitness.valid) / count,
+        exact_target_count=sum(1 for item in scored if item.fitness.exact_target),
+        exact_region_count=sum(1 for item in scored if item.fitness.exact_region is not None),
+        mean_cd_steps=sum(item.fitness.cd_steps for item in scored) / count,
+        mean_cd_depth=sum(item.fitness.cd_depth for item in scored) / count,
+        mean_proof_size=sum(item.fitness.proof_size for item in scored) / count,
+        mean_formula_size=sum(item.fitness.formula_size for item in scored) / count,
     )
 
 
