@@ -143,17 +143,18 @@ def _extract(
                     out,
                     config,
                 )
-                _extract(
-                    Goal(
-                        prefix + (left, right) + suffix,
-                        goal.target,
-                        f"{goal.name}:ctx-and",
-                        goal.weight * config.context_conjunction_split_weight,
-                    ),
-                    seen,
-                    out,
-                    config,
-                )
+                if config.enable_context_conjunction_split:
+                    _extract(
+                        Goal(
+                            prefix + (left, right) + suffix,
+                            goal.target,
+                            f"{goal.name}:ctx-and",
+                            goal.weight * config.context_conjunction_split_weight,
+                        ),
+                        seen,
+                        out,
+                        config,
+                    )
             case SOr(left, right):
                 _extract(
                     Goal(

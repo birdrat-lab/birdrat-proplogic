@@ -51,6 +51,17 @@ def test_context_conjunction_regions() -> None:
 
     assert SImp(SAnd(a, b), a) in theorems
     assert SImp(SAnd(a, b), b) in theorems
+    assert SImp(SAnd(a, b), c) in theorems
+    assert SImp(a, SImp(b, c)) not in theorems
+
+
+def test_context_conjunction_split_is_experimental_flag() -> None:
+    a = SAtom("a")
+    b = SAtom("b")
+    c = SAtom("c")
+    config = ProplogicConfig(regions=RegionConfig(enable_context_conjunction_split=True))
+    theorems = theorem_set(extract_goals(SImp(SAnd(a, b), c), config))
+
     assert SImp(a, SImp(b, c)) in theorems
 
 

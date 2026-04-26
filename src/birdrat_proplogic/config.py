@@ -12,6 +12,7 @@ class RegionConfig:
     context_conjunction_part_weight: float = 0.5
     context_conjunction_split_weight: float = 0.6
     context_disjunction_case_weight: float = 0.6
+    enable_context_conjunction_split: bool = False
 
 
 @dataclass(frozen=True)
