@@ -7,7 +7,20 @@ from math import exp
 from birdrat_proplogic.config import DEFAULT_CONFIG, FitnessConfig, ProplogicConfig
 from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size
 from birdrat_proplogic.goals import Goal
-from birdrat_proplogic.proof import Ax1, Ax2, Ax3, CD, Invalid, Proof, cd_depth, cd_steps, conclusion, proof_size
+from birdrat_proplogic.proof import (
+    Ax1,
+    Ax2,
+    Ax3,
+    CD,
+    Invalid,
+    Proof,
+    cd_depth,
+    cd_steps,
+    conclusion,
+    proof_size,
+    strip_vacuous_weakening,
+    substantive_cd_steps,
+)
 from birdrat_proplogic.unify import UnifyFailure, unify
 
 
@@ -60,30 +73,45 @@ def total_fitness(
 
     exact_target = proof_conclusion == target
     exact_region = _matching_region(proof_conclusion, regions)
-    target_similarity = directed_similarity(proof_conclusion, target, fitness_config)
-    region_similarity = best_region_similarity(proof_conclusion, regions, fitness_config)
-    directed = best_directed_similarity(proof_conclusion, target, regions)
-    old = best_old_formula_similarity(proof_conclusion, target, regions)
-    debt = min_assumption_debt(proof_conclusion, target, regions, fitness_config)
+    scoring_conclusion, weakening_wrappers = strip_vacuous_weakening(proof)
+    if isinstance(scoring_conclusion, Invalid):
+        scoring_conclusion = proof_conclusion
+        weakening_wrappers = 0
+
+    target_similarity = directed_similarity(scoring_conclusion, target, fitness_config)
+    region_similarity = best_region_similarity(scoring_conclusion, regions, fitness_config)
+    directed = best_directed_similarity(scoring_conclusion, target, regions)
+    old = best_old_formula_similarity(scoring_conclusion, target, regions)
+    debt = min_assumption_debt(scoring_conclusion, target, regions, fitness_config)
     similarity = _combined_similarity(directed, old, fitness_config)
+    substantive_steps = substantive_cd_steps(proof)
+    projection = is_projection_formula(scoring_conclusion)
+    consequent_similarity = best_consequent_similarity(scoring_conclusion, target, regions)
+    consequent_matches = consequent_similarity >= fitness_config.consequent_match_threshold
+    if not exact_target and exact_region is None and projection:
+        similarity = min(similarity, fitness_config.projection_similarity_cap)
+    if not exact_target and exact_region is None and not consequent_matches:
+        similarity = min(similarity, fitness_config.consequent_mismatch_similarity_cap)
 
     if exact_target:
         score = fitness_config.exact_success_base + fitness_config.exact_target_bonus
     elif exact_region is not None:
         score = fitness_config.exact_region_bonus * exact_region.weight
         score += fitness_config.symbolic_similarity_weight * similarity
-    elif steps == 0:
+    elif substantive_steps == 0:
         score = fitness_config.axiom_only_similarity_cap * similarity
     else:
         score = 0.0
         score += fitness_config.symbolic_similarity_weight * similarity
-        score += fitness_config.cd_existence_bonus
-        score += fitness_config.cd_progress_bonus * cd_progress(proof, target, regions)
+        if consequent_matches:
+            score += fitness_config.cd_existence_bonus
+            score += fitness_config.cd_progress_bonus * cd_progress(proof, target, regions)
     if not exact_target and exact_region is None:
         score -= fitness_config.assumption_debt_penalty * debt
+        score -= fitness_config.weakening_wrapper_penalty * weakening_wrappers
 
     score -= _complexity_penalty(steps, depth, nodes, formulas, fitness_config)
-    if not exact_target and exact_region is None and is_projection_formula(proof_conclusion):
+    if not exact_target and exact_region is None and projection:
         score -= fitness_config.projection_penalty
 
     return FitnessResult(
@@ -114,6 +142,12 @@ def best_directed_similarity(candidate: Formula, target: Formula, regions: tuple
 def best_old_formula_similarity(candidate: Formula, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
     targets = (target,) + tuple(region.core_theorem() for region in regions)
     return max(formula_similarity(candidate, item) for item in targets)
+
+
+def best_consequent_similarity(candidate: Formula, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
+    _, candidate_consequent = implication_spine(candidate)
+    targets = (target,) + tuple(region.core_theorem() for region in regions)
+    return max(_consequent_similarity(candidate_consequent, implication_spine(item)[1]) for item in targets)
 
 
 def best_region_similarity(
@@ -156,7 +190,7 @@ def implication_spine_similarity(candidate: Formula, target: Formula) -> float:
     target_antecedents, target_consequent = implication_spine(target)
 
     antecedent_score = _antecedent_similarity(candidate_antecedents, target_antecedents)
-    consequent_score = formula_similarity(candidate_consequent, target_consequent)
+    consequent_score = _consequent_similarity(candidate_consequent, target_consequent)
     assumption_score = _assumption_count_score(candidate_antecedents, target_antecedents)
     debt = assumption_debt(candidate, target)
 
@@ -211,12 +245,12 @@ def is_projection_formula(formula: Formula) -> bool:
 
 
 def cd_progress(proof: Proof, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
-    if not isinstance(proof, CD):
+    if not isinstance(proof, CD) or substantive_cd_steps(proof) == 0:
         return 0.0
 
-    proof_conclusion = conclusion(proof)
-    major_conclusion = conclusion(proof.major)
-    minor_conclusion = conclusion(proof.minor)
+    proof_conclusion, _ = strip_vacuous_weakening(proof)
+    major_conclusion, _ = strip_vacuous_weakening(proof.major)
+    minor_conclusion, _ = strip_vacuous_weakening(proof.minor)
     if isinstance(proof_conclusion, Invalid):
         return 0.0
 
@@ -326,6 +360,14 @@ def _assumption_count_score(candidate: tuple[Formula, ...], target: tuple[Formul
     if len(candidate) <= len(target):
         return 1.0
     return 1.0 / (1.0 + len(candidate) - len(target))
+
+
+def _consequent_similarity(candidate: Formula, target: Formula) -> float:
+    if candidate == target:
+        return 1.0
+    if not isinstance(unify(candidate, target), UnifyFailure):
+        return 0.85
+    return 0.15 * formula_similarity(candidate, target)
 
 
 def _root_similarity(left: Formula, right: Formula) -> float:

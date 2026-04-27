@@ -83,12 +83,67 @@ def is_valid(proof: Proof) -> bool:
 
 
 @lru_cache(maxsize=None)
+def is_weakening_cd(proof: Proof) -> bool:
+    match proof:
+        case CD(Ax1(p, _), minor):
+            minor_conclusion = conclusion(minor)
+            if isinstance(minor_conclusion, Invalid):
+                return False
+            return not isinstance(unify(p, minor_conclusion), UnifyFailure)
+        case _:
+            return False
+
+
+@lru_cache(maxsize=None)
+def is_vacuous_cd(proof: Proof) -> bool:
+    if is_weakening_cd(proof):
+        return True
+    match proof:
+        case CD(major, _):
+            proof_conclusion = conclusion(proof)
+            if isinstance(proof_conclusion, Invalid):
+                return False
+            stripped_major_conclusion, major_wrappers = strip_vacuous_weakening(major)
+            return major_wrappers > 0 and proof_conclusion == stripped_major_conclusion
+        case _:
+            return False
+
+
+@lru_cache(maxsize=None)
+def strip_vacuous_weakening(proof: Proof) -> tuple[Conclusion, int]:
+    stripped = proof
+    wrappers = 0
+    while True:
+        if is_weakening_cd(stripped):
+            assert isinstance(stripped, CD)
+            stripped = stripped.minor
+            wrappers += 1
+            continue
+        if isinstance(stripped, CD):
+            stripped_major_conclusion, major_wrappers = strip_vacuous_weakening(stripped.major)
+            if major_wrappers > 0 and conclusion(stripped) == stripped_major_conclusion:
+                return (stripped_major_conclusion, wrappers + major_wrappers + 1)
+        break
+    return (conclusion(stripped), wrappers)
+
+
+@lru_cache(maxsize=None)
 def cd_steps(proof: Proof) -> int:
     match proof:
         case Ax1() | Ax2() | Ax3():
             return 0
         case CD(major, minor):
             return 1 + cd_steps(major) + cd_steps(minor)
+
+
+@lru_cache(maxsize=None)
+def substantive_cd_steps(proof: Proof) -> int:
+    match proof:
+        case Ax1() | Ax2() | Ax3():
+            return 0
+        case CD(major, minor):
+            root_step = 0 if is_vacuous_cd(proof) else 1
+            return root_step + substantive_cd_steps(major) + substantive_cd_steps(minor)
 
 
 @lru_cache(maxsize=None)

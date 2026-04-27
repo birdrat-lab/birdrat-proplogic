@@ -28,6 +28,10 @@ class FitnessConfig:
     cd_existence_bonus: float = 250.0
     cd_progress_bonus: float = 500.0
     projection_penalty: float = 250.0
+    projection_similarity_cap: float = 0.15
+    weakening_wrapper_penalty: float = 300.0
+    consequent_match_threshold: float = 0.75
+    consequent_mismatch_similarity_cap: float = 0.20
     directed_similarity_weight: float = 0.85
     auxiliary_similarity_weight: float = 0.15
     assumption_debt_penalty: float = 100.0

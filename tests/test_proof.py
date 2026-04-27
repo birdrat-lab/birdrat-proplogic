@@ -1,5 +1,20 @@
 from birdrat_proplogic.formula import Atom, Imp, Meta, Not
-from birdrat_proplogic.proof import Ax1, Ax2, Ax3, CD, Invalid, cd_depth, cd_steps, conclusion, proof_pretty, proof_size
+from birdrat_proplogic.proof import (
+    Ax1,
+    Ax2,
+    Ax3,
+    CD,
+    Invalid,
+    cd_depth,
+    cd_steps,
+    conclusion,
+    is_weakening_cd,
+    is_vacuous_cd,
+    proof_pretty,
+    proof_size,
+    strip_vacuous_weakening,
+    substantive_cd_steps,
+)
 
 
 def test_p2_axiom_conclusions() -> None:
@@ -37,6 +52,40 @@ def test_proof_metrics() -> None:
     assert cd_steps(proof) == 2
     assert cd_depth(proof) == 2
     assert proof_size(proof) == 5
+
+
+def test_vacuous_weakening_detection_strips_ax1_cd_wrapper() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    k = Not(Imp(b, Not(a)))
+    ax1 = Ax1(Meta("?p"), h)
+    ax3 = Ax3(Not(Imp(a, Not(k))), a)
+    proof = CD(ax1, ax3)
+
+    stripped_conclusion, wrappers = strip_vacuous_weakening(proof)
+
+    assert is_weakening_cd(proof)
+    assert stripped_conclusion == conclusion(ax3)
+    assert wrappers == 1
+    assert substantive_cd_steps(proof) == 0
+
+
+def test_vacuous_cd_detection_catches_ax1_wrap_then_unwrap_detour() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    base = Ax1(h, a)
+    wrapper = CD(Ax1(Meta("?r"), Meta("?q")), base)
+    detour = CD(wrapper, Ax1(b, a))
+
+    stripped_conclusion, wrappers = strip_vacuous_weakening(detour)
+
+    assert not is_weakening_cd(detour)
+    assert is_vacuous_cd(detour)
+    assert stripped_conclusion == conclusion(base)
+    assert wrappers == 2
+    assert substantive_cd_steps(detour) == 0
 
 
 def test_proof_pretty_includes_axiom_and_conclusion() -> None:

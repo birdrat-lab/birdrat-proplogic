@@ -15,8 +15,8 @@ from birdrat_proplogic.fitness import (
 )
 from birdrat_proplogic.formula import Atom, Imp, Meta, Not
 from birdrat_proplogic.goals import extract_goals
-from birdrat_proplogic.proof import Ax1, CD, Invalid, conclusion
-from birdrat_proplogic.surface import SAtom, SImp
+from birdrat_proplogic.proof import Ax1, Ax2, Ax3, CD, Invalid, conclusion, substantive_cd_steps
+from birdrat_proplogic.surface import SAnd, SAtom, SImp
 
 
 def test_formula_similarity_rewards_exact_match() -> None:
@@ -115,6 +115,22 @@ def test_total_fitness_penalizes_extra_assumption_debt() -> None:
     assert total_fitness(lighter_extra, target).score > total_fitness(bad, target).score
 
 
+def test_total_fitness_caps_non_exact_projection_similarity() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    k = Not(Imp(b, Not(a)))
+    target = Imp(h, k)
+    regions = extract_goals(SImp(SAnd(SAtom("a"), SAtom("b")), SAnd(SAtom("b"), SAtom("a"))))
+    projection = Ax1(h, a)
+
+    result = total_fitness(projection, target, regions)
+
+    assert conclusion(projection) == Imp(h, Imp(a, h))
+    assert result.similarity == 0.15
+    assert result.score < 0.0
+
+
 def test_depth_penalty_starts_after_threshold() -> None:
     assert depth_penalty(2, 2) == 0.0
     assert depth_penalty(3, 2) > 0.0
@@ -173,15 +189,51 @@ def test_axiom_only_similarity_is_capped_below_valid_cd_candidate() -> None:
     b = Atom("b")
     target = Imp(Not(Imp(a, Not(b))), Not(Imp(b, Not(a))))
     similar_axiom = Ax1(Not(Imp(b, Not(a))), Not(Imp(a, Not(b))))
-    valid_cd = CD(Ax1(Meta("?p"), Meta("?q")), Ax1(a, b))
+    valid_cd = CD(Ax2(Meta("?p"), Meta("?q"), Meta("?r")), Ax1(a, b))
 
     axiom_result = total_fitness(similar_axiom, target)
     cd_result = total_fitness(valid_cd, target)
 
     assert axiom_result.cd_steps == 0
-    assert axiom_result.similarity > 0.2
+    assert axiom_result.similarity == 0.15
     assert cd_result.cd_steps > 0
+    assert substantive_cd_steps(valid_cd) > 0
     assert cd_result.score > axiom_result.score
+
+
+def test_vacuous_weakening_scores_below_substantive_cd_candidate() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    k = Not(Imp(b, Not(a)))
+    ax1 = Ax1(Meta("?p"), h)
+    ax3 = Ax3(Not(Imp(a, Not(k))), a)
+    weakening = CD(ax1, ax3)
+    substantive = CD(Ax2(Meta("?p"), Meta("?q"), Meta("?r")), Ax1(a, b))
+    target = conclusion(substantive)
+
+    assert not isinstance(target, Invalid)
+    assert substantive_cd_steps(weakening) == 0
+    assert substantive_cd_steps(substantive) > 0
+    assert total_fitness(weakening, target).score < total_fitness(substantive, target).score
+
+
+def test_final_consequent_mismatch_does_not_get_cd_bonus() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    k = Not(Imp(b, Not(a)))
+    target = Imp(h, k)
+    regions = extract_goals(SImp(SAnd(SAtom("a"), SAtom("b")), SAnd(SAtom("b"), SAtom("a"))))
+    identity_major = CD(Ax2(Meta("?p"), Meta("?q"), Meta("?r")), Ax1(Meta("?x"), Meta("?y")))
+    identity = CD(identity_major, Ax1(h, b))
+
+    result = total_fitness(identity, target, regions)
+
+    assert conclusion(identity) == Imp(h, h)
+    assert substantive_cd_steps(identity) > 0
+    assert result.similarity == 0.15
+    assert result.score < 200.0
 
 
 def test_exact_region_still_beats_non_exact_cd() -> None:
@@ -204,7 +256,7 @@ def test_exact_region_still_beats_non_exact_cd() -> None:
 def test_cd_progress_is_positive_when_cd_conclusion_is_closer_than_parents() -> None:
     a = Atom("a")
     b = Atom("b")
-    proof = CD(Ax1(Meta("?p"), Meta("?q")), Ax1(a, b))
+    proof = CD(Ax2(Meta("?p"), Meta("?q"), Meta("?r")), Ax1(a, b))
     target = conclusion(proof)
 
     assert not isinstance(target, Invalid)
