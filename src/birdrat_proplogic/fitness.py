@@ -60,9 +60,12 @@ def total_fitness(
 
     exact_target = proof_conclusion == target
     exact_region = _matching_region(proof_conclusion, regions)
-    target_similarity = directed_similarity(proof_conclusion, target)
-    region_similarity = best_region_similarity(proof_conclusion, regions)
-    similarity = max(target_similarity, region_similarity)
+    target_similarity = directed_similarity(proof_conclusion, target, fitness_config)
+    region_similarity = best_region_similarity(proof_conclusion, regions, fitness_config)
+    directed = best_directed_similarity(proof_conclusion, target, regions)
+    old = best_old_formula_similarity(proof_conclusion, target, regions)
+    debt = min_assumption_debt(proof_conclusion, target, regions, fitness_config)
+    similarity = _combined_similarity(directed, old, fitness_config)
 
     if exact_target:
         score = fitness_config.exact_success_base + fitness_config.exact_target_bonus
@@ -76,6 +79,8 @@ def total_fitness(
         score += fitness_config.symbolic_similarity_weight * similarity
         score += fitness_config.cd_existence_bonus
         score += fitness_config.cd_progress_bonus * cd_progress(proof, target, regions)
+    if not exact_target and exact_region is None:
+        score -= fitness_config.assumption_debt_penalty * debt
 
     score -= _complexity_penalty(steps, depth, nodes, formulas, fitness_config)
     if not exact_target and exact_region is None and is_projection_formula(proof_conclusion):
@@ -98,18 +103,39 @@ def total_fitness(
 
 
 def best_similarity(candidate: Formula, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
+    return best_directed_similarity(candidate, target, regions)
+
+
+def best_directed_similarity(candidate: Formula, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
     targets = (target,) + tuple(region.core_theorem() for region in regions)
-    return max(directed_similarity(candidate, item) for item in targets)
+    return max(implication_spine_similarity(candidate, item) for item in targets)
 
 
-def best_region_similarity(candidate: Formula, regions: tuple[Goal, ...] = ()) -> float:
+def best_old_formula_similarity(candidate: Formula, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
+    targets = (target,) + tuple(region.core_theorem() for region in regions)
+    return max(formula_similarity(candidate, item) for item in targets)
+
+
+def best_region_similarity(
+    candidate: Formula,
+    regions: tuple[Goal, ...] = (),
+    config: FitnessConfig = DEFAULT_CONFIG.fitness,
+) -> float:
     if not regions:
         return 0.0
-    return max(directed_similarity(candidate, region.core_theorem()) for region in regions)
+    return max(directed_similarity(candidate, region.core_theorem(), config) for region in regions)
 
 
-def directed_similarity(candidate: Formula, target: Formula) -> float:
-    return 0.75 * implication_spine_similarity(candidate, target) + 0.25 * formula_similarity(candidate, target)
+def directed_similarity(
+    candidate: Formula,
+    target: Formula,
+    config: FitnessConfig = DEFAULT_CONFIG.fitness,
+) -> float:
+    return _combined_similarity(
+        implication_spine_similarity(candidate, target),
+        formula_similarity(candidate, target),
+        config,
+    )
 
 
 def implication_spine(formula: Formula) -> tuple[tuple[Formula, ...], Formula]:
@@ -129,24 +155,54 @@ def implication_spine_similarity(candidate: Formula, target: Formula) -> float:
     candidate_antecedents, candidate_consequent = implication_spine(candidate)
     target_antecedents, target_consequent = implication_spine(target)
 
-    shared = min(len(candidate_antecedents), len(target_antecedents))
-    if target_antecedents:
-        matched_initial = sum(
-            formula_similarity(candidate_antecedents[index], target_antecedents[index])
-            for index in range(shared)
-        ) / len(target_antecedents)
-    else:
-        matched_initial = 1.0 if not candidate_antecedents else 0.0
-
+    antecedent_score = _antecedent_similarity(candidate_antecedents, target_antecedents)
     consequent_score = formula_similarity(candidate_consequent, target_consequent)
-    length_score = 1.0 / (1.0 + abs(len(candidate_antecedents) - len(target_antecedents)))
-    extra_antecedents = candidate_antecedents[len(target_antecedents) :]
-    extra_penalty = min(0.35, 0.12 * len(extra_antecedents))
-    consequent_as_extra_penalty = 0.30 if target_consequent in extra_antecedents else 0.0
+    assumption_score = _assumption_count_score(candidate_antecedents, target_antecedents)
+    debt = assumption_debt(candidate, target)
 
-    score = 0.30 * matched_initial + 0.55 * consequent_score + 0.15 * length_score
-    score -= extra_penalty + consequent_as_extra_penalty
+    score = 0.25 * antecedent_score + 0.60 * consequent_score + 0.15 * assumption_score
+    score -= min(0.75, 0.20 * debt)
     return max(0.0, min(1.0, score))
+
+
+def extra_assumptions(candidate: Formula, target: Formula) -> tuple[Formula, ...]:
+    candidate_antecedents, _ = implication_spine(candidate)
+    target_antecedents, _ = implication_spine(target)
+    if _starts_with(candidate_antecedents, target_antecedents):
+        return candidate_antecedents[len(target_antecedents) :]
+    return tuple(
+        antecedent
+        for index, antecedent in enumerate(candidate_antecedents)
+        if index >= len(target_antecedents) or antecedent != target_antecedents[index]
+    )
+
+
+def assumption_debt(
+    candidate: Formula,
+    target: Formula,
+    config: FitnessConfig = DEFAULT_CONFIG.fitness,
+) -> float:
+    candidate_antecedents, candidate_head = implication_spine(candidate)
+    _, target_head = implication_spine(target)
+    extra = extra_assumptions(candidate, target)
+    debt = config.extra_antecedent_penalty * len(extra)
+    debt += config.extra_antecedent_size_penalty * sum(formula_size(item) for item in extra)
+
+    if target_head in candidate_antecedents:
+        debt += config.extra_antecedent_penalty * 2.0
+    if candidate_head == target_head and extra:
+        debt += config.extra_antecedent_penalty * len(extra)
+    return debt
+
+
+def min_assumption_debt(
+    candidate: Formula,
+    target: Formula,
+    regions: tuple[Goal, ...] = (),
+    config: FitnessConfig = DEFAULT_CONFIG.fitness,
+) -> float:
+    targets = (target,) + tuple(region.core_theorem() for region in regions)
+    return min(assumption_debt(candidate, item, config) for item in targets)
 
 
 def is_projection_formula(formula: Formula) -> bool:
@@ -237,6 +293,39 @@ def _complexity_penalty(
             config.depth_penalty_steepness,
         )
     )
+
+
+def _combined_similarity(directed: float, old: float, config: FitnessConfig) -> float:
+    total_weight = config.directed_similarity_weight + config.auxiliary_similarity_weight
+    if total_weight <= 0:
+        return 0.0
+    return (
+        config.directed_similarity_weight * directed
+        + config.auxiliary_similarity_weight * old
+    ) / total_weight
+
+
+def _starts_with(candidate: tuple[Formula, ...], prefix: tuple[Formula, ...]) -> bool:
+    if len(candidate) < len(prefix):
+        return False
+    return candidate[: len(prefix)] == prefix
+
+
+def _antecedent_similarity(candidate: tuple[Formula, ...], target: tuple[Formula, ...]) -> float:
+    if not candidate and not target:
+        return 1.0
+    if not candidate and target:
+        return 0.85
+    shared = min(len(candidate), len(target))
+    if shared == 0:
+        return 0.0
+    return sum(formula_similarity(candidate[index], target[index]) for index in range(shared)) / max(len(target), shared)
+
+
+def _assumption_count_score(candidate: tuple[Formula, ...], target: tuple[Formula, ...]) -> float:
+    if len(candidate) <= len(target):
+        return 1.0
+    return 1.0 / (1.0 + len(candidate) - len(target))
 
 
 def _root_similarity(left: Formula, right: Formula) -> float:

@@ -1,8 +1,11 @@
 from birdrat_proplogic.config import ProplogicConfig
 from birdrat_proplogic.fitness import (
+    assumption_debt,
     best_region_similarity,
     cd_progress,
     depth_penalty,
+    directed_similarity,
+    extra_assumptions,
     formula_similarity,
     implication_spine,
     implication_spine_similarity,
@@ -47,6 +50,47 @@ def test_implication_spine_similarity_penalizes_projection_artifact() -> None:
     assert implication_spine_similarity(bad_candidate, target) < 0.25
 
 
+def test_assumption_debt_tracks_extra_candidate_antecedents() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    e1 = Imp(Not(a), Not(Not(a)))
+    e2 = Not(a)
+    target = Imp(h, a)
+    bad = Imp(h, Imp(e1, Imp(e2, a)))
+
+    assert extra_assumptions(bad, target) == (e1, e2)
+    assert assumption_debt(bad, target) > assumption_debt(target, target)
+
+
+def test_directed_similarity_prefers_exact_and_stronger_over_extra_assumptions() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    e1 = Imp(Not(a), Not(Not(a)))
+    e2 = Not(a)
+    target = Imp(h, a)
+    bad = Imp(h, Imp(e1, Imp(e2, a)))
+    stronger = a
+
+    assert directed_similarity(target, target) == 1.0
+    assert directed_similarity(stronger, target) > 0.75
+    assert directed_similarity(bad, target) < 0.35
+    assert directed_similarity(stronger, target) > directed_similarity(bad, target)
+
+
+def test_full_target_projection_artifact_has_low_directed_similarity_and_debt() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    k = Not(Imp(b, Not(a)))
+    target = Imp(h, k)
+    bad = Imp(h, Imp(b, Imp(k, b)))
+
+    assert directed_similarity(bad, target) < 0.25
+    assert assumption_debt(bad, target) > 0.0
+
+
 def test_is_projection_formula_detects_final_consequent_projection() -> None:
     a = Atom("a")
     b = Atom("b")
@@ -55,6 +99,20 @@ def test_is_projection_formula_detects_final_consequent_projection() -> None:
 
     assert is_projection_formula(Imp(h, Imp(b, Imp(k, b))))
     assert not is_projection_formula(Imp(h, k))
+
+
+def test_total_fitness_penalizes_extra_assumption_debt() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    x = Atom("x")
+    h = Not(Imp(a, Not(b)))
+    e1 = Imp(Not(a), Not(Not(a)))
+    target = Imp(h, h)
+    bad = Ax1(h, e1)
+    lighter_extra = Ax1(h, x)
+
+    assert assumption_debt(conclusion(lighter_extra), target) < assumption_debt(conclusion(bad), target)
+    assert total_fitness(lighter_extra, target).score > total_fitness(bad, target).score
 
 
 def test_depth_penalty_starts_after_threshold() -> None:
@@ -121,7 +179,7 @@ def test_axiom_only_similarity_is_capped_below_valid_cd_candidate() -> None:
     cd_result = total_fitness(valid_cd, target)
 
     assert axiom_result.cd_steps == 0
-    assert axiom_result.similarity > 0.5
+    assert axiom_result.similarity > 0.2
     assert cd_result.cd_steps > 0
     assert cd_result.score > axiom_result.score
 

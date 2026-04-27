@@ -28,6 +28,11 @@ class FitnessConfig:
     cd_existence_bonus: float = 250.0
     cd_progress_bonus: float = 500.0
     projection_penalty: float = 250.0
+    directed_similarity_weight: float = 0.85
+    auxiliary_similarity_weight: float = 0.15
+    assumption_debt_penalty: float = 100.0
+    extra_antecedent_penalty: float = 1.0
+    extra_antecedent_size_penalty: float = 0.05
     adaptive_cd_depth_threshold: int = 8
     depth_penalty_limit: float = 100.0
     depth_penalty_steepness: float = 1.5
