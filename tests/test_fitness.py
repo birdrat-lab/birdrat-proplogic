@@ -1,5 +1,15 @@
 from birdrat_proplogic.config import ProplogicConfig
-from birdrat_proplogic.fitness import best_region_similarity, cd_progress, depth_penalty, formula_similarity, total_fitness, total_formula_size
+from birdrat_proplogic.fitness import (
+    best_region_similarity,
+    cd_progress,
+    depth_penalty,
+    formula_similarity,
+    implication_spine,
+    implication_spine_similarity,
+    is_projection_formula,
+    total_fitness,
+    total_formula_size,
+)
 from birdrat_proplogic.formula import Atom, Imp, Meta, Not
 from birdrat_proplogic.goals import extract_goals
 from birdrat_proplogic.proof import Ax1, CD, Invalid, conclusion
@@ -17,6 +27,34 @@ def test_formula_similarity_rewards_shared_implication_skeleton() -> None:
     far = formula_similarity(Imp(Atom("a"), Atom("b")), Not(Imp(Atom("a"), Atom("c"))))
 
     assert close > far
+
+
+def test_implication_spine_extracts_antecedents_and_final_consequent() -> None:
+    formula = Imp(Atom("a"), Imp(Atom("b"), Atom("c")))
+
+    assert implication_spine(formula) == ((Atom("a"), Atom("b")), Atom("c"))
+
+
+def test_implication_spine_similarity_penalizes_projection_artifact() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    k = Not(Imp(b, Not(a)))
+    target = Imp(h, k)
+    bad_candidate = Imp(h, Imp(b, Imp(k, b)))
+
+    assert implication_spine_similarity(target, target) == 1.0
+    assert implication_spine_similarity(bad_candidate, target) < 0.25
+
+
+def test_is_projection_formula_detects_final_consequent_projection() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Not(Imp(a, Not(b)))
+    k = Not(Imp(b, Not(a)))
+
+    assert is_projection_formula(Imp(h, Imp(b, Imp(k, b))))
+    assert not is_projection_formula(Imp(h, k))
 
 
 def test_depth_penalty_starts_after_threshold() -> None:

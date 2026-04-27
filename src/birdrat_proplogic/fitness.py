@@ -60,7 +60,7 @@ def total_fitness(
 
     exact_target = proof_conclusion == target
     exact_region = _matching_region(proof_conclusion, regions)
-    target_similarity = formula_similarity(proof_conclusion, target)
+    target_similarity = directed_similarity(proof_conclusion, target)
     region_similarity = best_region_similarity(proof_conclusion, regions)
     similarity = max(target_similarity, region_similarity)
 
@@ -78,6 +78,8 @@ def total_fitness(
         score += fitness_config.cd_progress_bonus * cd_progress(proof, target, regions)
 
     score -= _complexity_penalty(steps, depth, nodes, formulas, fitness_config)
+    if not exact_target and exact_region is None and is_projection_formula(proof_conclusion):
+        score -= fitness_config.projection_penalty
 
     return FitnessResult(
         score=score,
@@ -97,13 +99,59 @@ def total_fitness(
 
 def best_similarity(candidate: Formula, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
     targets = (target,) + tuple(region.core_theorem() for region in regions)
-    return max(formula_similarity(candidate, item) for item in targets)
+    return max(directed_similarity(candidate, item) for item in targets)
 
 
 def best_region_similarity(candidate: Formula, regions: tuple[Goal, ...] = ()) -> float:
     if not regions:
         return 0.0
-    return max(formula_similarity(candidate, region.core_theorem()) for region in regions)
+    return max(directed_similarity(candidate, region.core_theorem()) for region in regions)
+
+
+def directed_similarity(candidate: Formula, target: Formula) -> float:
+    return 0.75 * implication_spine_similarity(candidate, target) + 0.25 * formula_similarity(candidate, target)
+
+
+def implication_spine(formula: Formula) -> tuple[tuple[Formula, ...], Formula]:
+    antecedents: list[Formula] = []
+    current = formula
+    while isinstance(current, Imp):
+        antecedents.append(current.left)
+        current = current.right
+    return (tuple(antecedents), current)
+
+
+@lru_cache(maxsize=None)
+def implication_spine_similarity(candidate: Formula, target: Formula) -> float:
+    if candidate == target:
+        return 1.0
+
+    candidate_antecedents, candidate_consequent = implication_spine(candidate)
+    target_antecedents, target_consequent = implication_spine(target)
+
+    shared = min(len(candidate_antecedents), len(target_antecedents))
+    if target_antecedents:
+        matched_initial = sum(
+            formula_similarity(candidate_antecedents[index], target_antecedents[index])
+            for index in range(shared)
+        ) / len(target_antecedents)
+    else:
+        matched_initial = 1.0 if not candidate_antecedents else 0.0
+
+    consequent_score = formula_similarity(candidate_consequent, target_consequent)
+    length_score = 1.0 / (1.0 + abs(len(candidate_antecedents) - len(target_antecedents)))
+    extra_antecedents = candidate_antecedents[len(target_antecedents) :]
+    extra_penalty = min(0.35, 0.12 * len(extra_antecedents))
+    consequent_as_extra_penalty = 0.30 if target_consequent in extra_antecedents else 0.0
+
+    score = 0.30 * matched_initial + 0.55 * consequent_score + 0.15 * length_score
+    score -= extra_penalty + consequent_as_extra_penalty
+    return max(0.0, min(1.0, score))
+
+
+def is_projection_formula(formula: Formula) -> bool:
+    antecedents, consequent = implication_spine(formula)
+    return consequent in antecedents
 
 
 def cd_progress(proof: Proof, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
