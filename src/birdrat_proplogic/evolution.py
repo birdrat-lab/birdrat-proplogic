@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from random import Random
 
 from birdrat_proplogic.archive import ProofArchive, empty_archive, update_archive
+from birdrat_proplogic.beam import cd_beam_search
 from birdrat_proplogic.config import DEFAULT_CONFIG, ProplogicConfig
 from birdrat_proplogic.crossover import crossover_proof
 from birdrat_proplogic.fitness import FitnessResult, total_fitness
@@ -11,7 +12,7 @@ from birdrat_proplogic.formula import Formula, pretty
 from birdrat_proplogic.goals import Goal, extract_goals
 from birdrat_proplogic.lib.archive_json import load_archive_json, save_archive_json
 from birdrat_proplogic.mutate import mutate_proof
-from birdrat_proplogic.proof import Invalid, Proof
+from birdrat_proplogic.proof import Invalid, Proof, substantive_cd_steps
 from birdrat_proplogic.quality import (
     QualityArchives,
     QualitySelectionResult,
@@ -42,6 +43,7 @@ class GenerationStats:
     exact_target_count: int
     exact_region_count: int
     mean_cd_steps: float
+    mean_substantive_cd_steps: float
     mean_cd_depth: float
     mean_proof_size: float
     mean_formula_size: float
@@ -53,7 +55,9 @@ class GenerationStats:
     schema_elite_best: float
     unique_behavior_count: int
     behavior_archive_size: int
+    schema_archive_size: int
     random_immigrant_count: int
+    beam_pool_size: int
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,7 @@ def evolve(
     active_config = _config_for_depth(config, active_depth)
     region_targets = tuple(region.core_theorem() for region in regions)
     formula_pool = formula_pool_from_target(core_target, region_targets)
+    beam_pool = cd_beam_search(core_target, regions, formula_pool, active_config)
     population = tuple(
         initialize_population_from_target(
             random,
@@ -93,6 +98,8 @@ def evolve(
             config=active_config,
         )
     )
+    if beam_pool:
+        population = _mix_seed_proofs(population, beam_pool, evolution_config.population_size)
     history: list[GenerationStats] = []
     archive = _load_archive(config)
     quality_archives = QualityArchives()
@@ -107,13 +114,13 @@ def evolve(
         scored = _score_population(population, core_target, regions, active_config)
         archive = update_archive(archive, _archive_items(scored), active_config)
         best = max(best, scored[0], key=lambda item: item.fitness.score)
-        history.append(_generation_stats(generation, active_depth, scored, quality_archives, last_selection))
+        history.append(_generation_stats(generation, active_depth, scored, quality_archives, last_selection, len(beam_pool)))
 
         if evolution_config.stop_on_exact and scored[0].fitness.exact_target:
             break
 
         children = _make_children(scored, active_config, random, formula_pool)
-        candidate_population = population + children
+        candidate_population = population + children + beam_pool
         candidate_scored = _score_population(candidate_population, core_target, regions, active_config)
         selection = select_quality_diverse_population(
             candidate_scored,
@@ -232,6 +239,7 @@ def _generation_stats(
     scored: tuple[ScoredProof, ...],
     quality_archives: QualityArchives,
     selection: QualitySelectionResult,
+    beam_pool_size: int,
 ) -> GenerationStats:
     best = scored[0]
     best_conclusion = best.fitness.conclusion
@@ -259,6 +267,7 @@ def _generation_stats(
         exact_target_count=sum(1 for item in scored if item.fitness.exact_target),
         exact_region_count=sum(1 for item in scored if item.fitness.exact_region is not None),
         mean_cd_steps=sum(item.fitness.cd_steps for item in scored) / count,
+        mean_substantive_cd_steps=sum(substantive_cd_steps(item.proof) for item in scored) / count,
         mean_cd_depth=sum(item.fitness.cd_depth for item in scored) / count,
         mean_proof_size=sum(item.fitness.proof_size for item in scored) / count,
         mean_formula_size=sum(item.fitness.formula_size for item in scored) / count,
@@ -270,8 +279,27 @@ def _generation_stats(
         schema_elite_best=_best_selected_score(scored, selection.schema_elites),
         unique_behavior_count=len(descriptor_set),
         behavior_archive_size=len(quality_archives.behavior_archive),
+        schema_archive_size=len(quality_archives.schema_archive),
         random_immigrant_count=len(selection.random_immigrants),
+        beam_pool_size=beam_pool_size,
     )
+
+
+def _mix_seed_proofs(population: tuple[Proof, ...], seed_proofs: tuple[Proof, ...], population_size: int) -> tuple[Proof, ...]:
+    if population_size <= 0:
+        return ()
+    mix_count = min(len(seed_proofs), max(1, population_size // 4))
+    mixed = list(seed_proofs[:mix_count]) + list(population)
+    output: list[Proof] = []
+    seen: set[Proof] = set()
+    for proof in mixed:
+        if proof in seen:
+            continue
+        output.append(proof)
+        seen.add(proof)
+        if len(output) >= population_size:
+            break
+    return tuple(output)
 
 
 def _best_selected_score(scored: tuple[ScoredProof, ...], proofs: tuple[Proof, ...]) -> float:

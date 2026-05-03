@@ -65,6 +65,11 @@ def test_config_from_args_applies_cli_overrides() -> None:
             "tmp/archive.json",
             "--diagnostics-interval",
             "5",
+            "--beam-width",
+            "11",
+            "--beam-max-depth",
+            "2",
+            "--no-beam",
             "--no-load-archive",
         ]
     )
@@ -74,5 +79,8 @@ def test_config_from_args_applies_cli_overrides() -> None:
     assert config.evolution.population_size == 7
     assert config.evolution.max_generations == 3
     assert config.evolution.diagnostics_interval == 5
+    assert config.evolution.beam_width == 11
+    assert config.evolution.beam_max_depth == 2
+    assert not config.evolution.beam_enabled
     assert config.archive.path == "tmp/archive.json"
     assert not config.archive.load_on_start

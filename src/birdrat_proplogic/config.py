@@ -69,6 +69,9 @@ class EvolutionConfig:
     novelty_k: int = 5
     behavior_archive_size: int = 200
     schema_archive_size: int = 50
+    beam_enabled: bool = True
+    beam_width: int = 25
+    beam_max_depth: int = 3
 
 
 @dataclass(frozen=True)

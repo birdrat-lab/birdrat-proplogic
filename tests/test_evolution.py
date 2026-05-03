@@ -12,6 +12,7 @@ def test_evolve_returns_population_and_history() -> None:
             max_generations=3,
             elite_count=2,
             tournament_size=2,
+            beam_enabled=False,
         )
     )
 
@@ -33,6 +34,7 @@ def test_evolve_is_deterministic_with_seed() -> None:
             max_generations=2,
             elite_count=1,
             tournament_size=2,
+            beam_enabled=False,
         )
     )
     target = SImp(SAtom("a"), SAtom("a"))
@@ -58,6 +60,7 @@ def test_iterative_deepening_updates_active_depth() -> None:
             iterative_deepening_budget=2,
             iterative_deepening_scale=1.0,
             diagnostics_interval=2,
+            beam_enabled=False,
         )
     )
 
@@ -78,6 +81,7 @@ def test_iterative_deepening_budget_scales_with_depth() -> None:
             max_proof_depth=4,
             iterative_deepening_budget=2,
             iterative_deepening_scale=2.0,
+            beam_enabled=False,
         )
     )
 
@@ -93,6 +97,7 @@ def test_evolve_handles_elite_count_larger_than_population() -> None:
             population_size=3,
             max_generations=1,
             elite_count=10,
+            beam_enabled=False,
         )
     )
 
@@ -109,6 +114,7 @@ def test_evolve_saves_archive_to_configured_path(tmp_path) -> None:
             population_size=4,
             max_generations=1,
             elite_count=1,
+            beam_enabled=False,
         ),
     )
 

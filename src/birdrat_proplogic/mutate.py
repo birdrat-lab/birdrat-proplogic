@@ -4,8 +4,8 @@ from random import Random
 from typing import Sequence
 
 from birdrat_proplogic.config import DEFAULT_CONFIG, MutationConfig, ProplogicConfig
-from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size, metas
-from birdrat_proplogic.proof import Ax1, Ax2, Ax3, CD, Proof
+from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size, is_closed_formula, metas
+from birdrat_proplogic.proof import Ax1, Ax2, Ax3, CD, Invalid, Proof, conclusion
 from birdrat_proplogic.unify import apply_subst
 
 
@@ -61,7 +61,7 @@ def mutate_proof(
         wrap_cd,
     ]
     if formula_pool and _proof_metas(proof):
-        operations.append(instantiate_meta_from_pool)
+        operations.extend([instantiate_meta_from_pool, close_schema_candidate])
     if isinstance(proof, CD):
         operations.extend([replace_cd_child, swap_cd_children])
     return random.choice(operations)(proof, random, config, formula_pool)
@@ -208,6 +208,24 @@ def instantiate_meta_from_pool(
     meta = random.choice(proof_metas)
     replacement = random.choice(tuple(formula_pool))
     return _apply_proof_subst(proof, {meta.name: replacement})
+
+
+def close_schema_candidate(
+    proof: Proof,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+    formula_pool: Sequence[Formula] = (),
+) -> Proof:
+    random = _rng(rng)
+    if not formula_pool:
+        return proof
+    current = proof
+    for _ in range(max(1, len(_proof_metas(current)))):
+        proof_conclusion = conclusion(current)
+        if not isinstance(proof_conclusion, Invalid) and is_closed_formula(proof_conclusion):
+            return current
+        current = instantiate_meta_from_pool(current, random, config, formula_pool)
+    return current
 
 
 def _formula_mutation_candidates(
