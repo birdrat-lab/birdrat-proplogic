@@ -4,8 +4,9 @@ from random import Random
 from typing import Sequence
 
 from birdrat_proplogic.config import DEFAULT_CONFIG, MutationConfig, ProplogicConfig
-from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size
+from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size, metas
 from birdrat_proplogic.proof import Ax1, Ax2, Ax3, CD, Proof
+from birdrat_proplogic.unify import apply_subst
 
 
 def mutate_formula(
@@ -59,6 +60,8 @@ def mutate_proof(
         replace_subtree,
         wrap_cd,
     ]
+    if formula_pool and _proof_metas(proof):
+        operations.append(instantiate_meta_from_pool)
     if isinstance(proof, CD):
         operations.extend([replace_cd_child, swap_cd_children])
     return random.choice(operations)(proof, random, config, formula_pool)
@@ -192,6 +195,21 @@ def swap_cd_children(
     return CD(proof.minor, proof.major)
 
 
+def instantiate_meta_from_pool(
+    proof: Proof,
+    rng: Random | None = None,
+    config: ProplogicConfig = DEFAULT_CONFIG,
+    formula_pool: Sequence[Formula] = (),
+) -> Proof:
+    random = _rng(rng)
+    proof_metas = tuple(_proof_metas(proof))
+    if not proof_metas or not formula_pool:
+        return proof
+    meta = random.choice(proof_metas)
+    replacement = random.choice(tuple(formula_pool))
+    return _apply_proof_subst(proof, {meta.name: replacement})
+
+
 def _formula_mutation_candidates(
     formula: Formula,
     rng: Random,
@@ -257,6 +275,30 @@ def _random_or_seeded_formula(rng: Random, config: ProplogicConfig, formula_pool
     if formula_pool and rng.random() < 0.9:
         return rng.choice(formula_pool)
     return random_formula(rng, config)
+
+
+def _proof_metas(proof: Proof) -> frozenset[Meta]:
+    match proof:
+        case Ax1(p, q):
+            return metas(p) | metas(q)
+        case Ax2(p, q, r):
+            return metas(p) | metas(q) | metas(r)
+        case Ax3(p, q):
+            return metas(p) | metas(q)
+        case CD(major, minor):
+            return _proof_metas(major) | _proof_metas(minor)
+
+
+def _apply_proof_subst(proof: Proof, subst: dict[str, Formula]) -> Proof:
+    match proof:
+        case Ax1(p, q):
+            return Ax1(apply_subst(p, subst), apply_subst(q, subst))
+        case Ax2(p, q, r):
+            return Ax2(apply_subst(p, subst), apply_subst(q, subst), apply_subst(r, subst))
+        case Ax3(p, q):
+            return Ax3(apply_subst(p, subst), apply_subst(q, subst))
+        case CD(major, minor):
+            return CD(_apply_proof_subst(major, subst), _apply_proof_subst(minor, subst))
 
 
 def _rng(rng: Random | None) -> Random:

@@ -66,6 +66,9 @@ class EvolutionConfig:
     iterative_deepening_scale: float = 1.5
     diagnostics_interval: int = 10
     stop_on_exact: bool = True
+    novelty_k: int = 5
+    behavior_archive_size: int = 200
+    schema_archive_size: int = 50
 
 
 @dataclass(frozen=True)

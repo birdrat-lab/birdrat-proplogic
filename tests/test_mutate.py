@@ -3,6 +3,7 @@ from random import Random
 from birdrat_proplogic.config import MutationConfig, ProplogicConfig
 from birdrat_proplogic.formula import Atom, Imp, Meta, Not, formula_size
 from birdrat_proplogic.mutate import (
+    instantiate_meta_from_pool,
     mutate_axiom_formula_argument,
     mutate_formula,
     mutate_proof,
@@ -102,3 +103,11 @@ def test_formula_mutation_can_wrap_with_negation_or_implication() -> None:
     mutated = mutate_formula(Atom("a"), Random(2))
 
     assert isinstance(mutated, Atom | Not | Imp)
+
+
+def test_instantiate_meta_from_pool_replaces_schematic_formula_argument() -> None:
+    proof = Ax1(Meta("?p"), Atom("b"))
+
+    mutated = instantiate_meta_from_pool(proof, Random(0), formula_pool=(Atom("a"),))
+
+    assert mutated == Ax1(Atom("a"), Atom("b"))

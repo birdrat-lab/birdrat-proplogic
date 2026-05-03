@@ -74,6 +74,23 @@ def contains_meta(formula: Formula) -> bool:
 
 
 @lru_cache(maxsize=None)
+def metas(formula: Formula) -> frozenset[Meta]:
+    match formula:
+        case Meta():
+            return frozenset((formula,))
+        case Atom():
+            return frozenset()
+        case Not(body):
+            return metas(body)
+        case Imp(left, right):
+            return metas(left) | metas(right)
+
+
+def is_closed_formula(formula: Formula) -> bool:
+    return not metas(formula)
+
+
+@lru_cache(maxsize=None)
 def subformulas(formula: Formula) -> tuple[Formula, ...]:
     formulas: list[Formula] = []
     _add_subformulas(formula, formulas, set())

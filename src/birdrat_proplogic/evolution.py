@@ -12,6 +12,14 @@ from birdrat_proplogic.goals import Goal, extract_goals
 from birdrat_proplogic.lib.archive_json import load_archive_json, save_archive_json
 from birdrat_proplogic.mutate import mutate_proof
 from birdrat_proplogic.proof import Invalid, Proof
+from birdrat_proplogic.quality import (
+    QualityArchives,
+    QualitySelectionResult,
+    behavior_descriptor,
+    novelty_score,
+    select_quality_diverse_population,
+    update_quality_archives,
+)
 from birdrat_proplogic.seed import formula_pool_from_target, initialize_population_from_target
 from birdrat_proplogic.surface import SurfaceFormula, desugar
 
@@ -37,6 +45,15 @@ class GenerationStats:
     mean_cd_depth: float
     mean_proof_size: float
     mean_formula_size: float
+    closed_fraction: float
+    schematic_fraction: float
+    target_elite_best: float
+    region_elite_best: float
+    novelty_elite_best: float
+    schema_elite_best: float
+    unique_behavior_count: int
+    behavior_archive_size: int
+    random_immigrant_count: int
 
 
 @dataclass(frozen=True)
@@ -44,6 +61,8 @@ class EvolutionResult:
     target: SurfaceFormula
     regions: tuple[Goal, ...]
     archive: ProofArchive
+    schema_archive: tuple[Proof, ...]
+    behavior_archive_size: int
     population: tuple[Proof, ...]
     best: ScoredProof
     history: tuple[GenerationStats, ...]
@@ -76,6 +95,8 @@ def evolve(
     )
     history: list[GenerationStats] = []
     archive = _load_archive(config)
+    quality_archives = QualityArchives()
+    last_selection = QualitySelectionResult((), (), (), (), (), (), ())
 
     scored = _score_population(population, core_target, regions, active_config)
     best = scored[0]
@@ -86,15 +107,33 @@ def evolve(
         scored = _score_population(population, core_target, regions, active_config)
         archive = update_archive(archive, _archive_items(scored), active_config)
         best = max(best, scored[0], key=lambda item: item.fitness.score)
-        history.append(_generation_stats(generation, active_depth, scored))
+        history.append(_generation_stats(generation, active_depth, scored, quality_archives, last_selection))
 
         if evolution_config.stop_on_exact and scored[0].fitness.exact_target:
             break
 
-        elite_count = min(evolution_config.elite_count, evolution_config.population_size)
-        elites = tuple(item.proof for item in scored[:elite_count])
         children = _make_children(scored, active_config, random, formula_pool)
-        population = (elites + children)[: evolution_config.population_size]
+        candidate_population = population + children
+        candidate_scored = _score_population(candidate_population, core_target, regions, active_config)
+        selection = select_quality_diverse_population(
+            candidate_scored,
+            core_target,
+            regions,
+            quality_archives,
+            active_config,
+            random,
+            formula_pool,
+        )
+        quality_archives = update_quality_archives(
+            quality_archives,
+            candidate_scored,
+            selection,
+            core_target,
+            regions,
+            active_config,
+        )
+        last_selection = selection
+        population = selection.population
 
     final_scored = _score_population(population, core_target, regions, _config_for_depth(config, active_depth))
     archive = update_archive(archive, _archive_items(final_scored), _config_for_depth(config, active_depth))
@@ -104,6 +143,8 @@ def evolve(
         target=target,
         regions=regions,
         archive=archive,
+        schema_archive=quality_archives.schema_archive,
+        behavior_archive_size=len(quality_archives.behavior_archive),
         population=population,
         best=best,
         history=tuple(history),
@@ -118,7 +159,7 @@ def _make_children(
     formula_pool: tuple[Formula, ...],
 ) -> tuple[Proof, ...]:
     evolution_config = config.evolution
-    child_count = max(0, evolution_config.population_size - evolution_config.elite_count)
+    child_count = max(0, evolution_config.population_size)
     children: list[Proof] = []
     while len(children) < child_count:
         parent1 = _tournament(scored, evolution_config.tournament_size, rng).proof
@@ -185,7 +226,13 @@ def _config_for_depth(config: ProplogicConfig, depth: int) -> ProplogicConfig:
     )
 
 
-def _generation_stats(generation: int, active_depth: int, scored: tuple[ScoredProof, ...]) -> GenerationStats:
+def _generation_stats(
+    generation: int,
+    active_depth: int,
+    scored: tuple[ScoredProof, ...],
+    quality_archives: QualityArchives,
+    selection: QualitySelectionResult,
+) -> GenerationStats:
     best = scored[0]
     best_conclusion = best.fitness.conclusion
     if isinstance(best_conclusion, Invalid):
@@ -193,6 +240,14 @@ def _generation_stats(generation: int, active_depth: int, scored: tuple[ScoredPr
     else:
         best_conclusion_text = pretty(best_conclusion)
     count = len(scored)
+    descriptors = tuple(behavior_descriptor(item.proof, item.fitness.conclusion) for item in scored)
+    closed_count = sum(1 for descriptor in descriptors if descriptor.closed)
+    schematic_count = sum(
+        1
+        for item, descriptor in zip(scored, descriptors)
+        if item.fitness.valid and not isinstance(item.fitness.conclusion, Invalid) and not descriptor.closed
+    )
+    descriptor_set = set(descriptors)
     return GenerationStats(
         generation=generation,
         active_proof_depth=active_depth,
@@ -207,7 +262,43 @@ def _generation_stats(generation: int, active_depth: int, scored: tuple[ScoredPr
         mean_cd_depth=sum(item.fitness.cd_depth for item in scored) / count,
         mean_proof_size=sum(item.fitness.proof_size for item in scored) / count,
         mean_formula_size=sum(item.fitness.formula_size for item in scored) / count,
+        closed_fraction=closed_count / count,
+        schematic_fraction=schematic_count / count,
+        target_elite_best=_best_selected_score(scored, selection.target_elites),
+        region_elite_best=_best_selected_score(scored, selection.region_elites),
+        novelty_elite_best=_best_selected_novelty(scored, selection.novelty_elites, quality_archives),
+        schema_elite_best=_best_selected_score(scored, selection.schema_elites),
+        unique_behavior_count=len(descriptor_set),
+        behavior_archive_size=len(quality_archives.behavior_archive),
+        random_immigrant_count=len(selection.random_immigrants),
     )
+
+
+def _best_selected_score(scored: tuple[ScoredProof, ...], proofs: tuple[Proof, ...]) -> float:
+    selected = set(proofs)
+    scores = [item.fitness.score for item in scored if item.proof in selected]
+    if not scores:
+        return 0.0
+    return max(scores)
+
+
+def _best_selected_novelty(
+    scored: tuple[ScoredProof, ...],
+    proofs: tuple[Proof, ...],
+    quality_archives: QualityArchives,
+) -> float:
+    selected = set(proofs)
+    scores = [
+        novelty_score(
+            behavior_descriptor(item.proof, item.fitness.conclusion),
+            quality_archives.behavior_archive,
+        )
+        for item in scored
+        if item.proof in selected
+    ]
+    if not scores:
+        return 0.0
+    return max(scores)
 
 
 def _make_rng(rng: Random | None, seed: int | None) -> Random:

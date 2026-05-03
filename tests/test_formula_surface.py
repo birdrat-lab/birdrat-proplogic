@@ -1,4 +1,4 @@
-from birdrat_proplogic.formula import Atom, Imp, Not, formula_size, pretty
+from birdrat_proplogic.formula import Atom, Imp, Meta, Not, formula_size, is_closed_formula, metas, pretty
 from birdrat_proplogic.surface import SAnd, SAtom, SIff, SImp, SOr, desugar, surface_pretty
 
 
@@ -18,6 +18,14 @@ def test_formula_size() -> None:
     assert formula_size(Atom("a")) == 1
     assert formula_size(Not(Atom("a"))) == 2
     assert formula_size(Imp(Atom("a"), Atom("b"))) == 3
+
+
+def test_metas_and_closed_formula_detection() -> None:
+    formula = Imp(Atom("a"), Not(Meta("?p")))
+
+    assert metas(formula) == frozenset((Meta("?p"),))
+    assert not is_closed_formula(formula)
+    assert is_closed_formula(Imp(Atom("a"), Not(Atom("b"))))
 
 
 def test_desugaring_and_or_iff() -> None:
@@ -42,4 +50,3 @@ def test_desugaring_spec_example() -> None:
 
 def test_surface_pretty_printing() -> None:
     assert surface_pretty(SImp(SAnd(SAtom("a"), SAtom("b")), SAtom("c"))) == "a ∧ b → c"
-
