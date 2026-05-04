@@ -1,6 +1,6 @@
 from dataclasses import replace
 
-from birdrat_proplogic.benchmarks import regression_benchmarks, small_target_benchmarks
+from birdrat_proplogic.benchmarks import expanded_target_benchmarks, regression_benchmarks, small_target_benchmarks
 from birdrat_proplogic.config import EvolutionConfig
 from birdrat_proplogic.run_benchmarks import build_arg_parser, render_benchmark_result
 from birdrat_proplogic.search import make_default_search_phases
@@ -21,6 +21,23 @@ def test_small_target_benchmarks_are_target_only_definitions() -> None:
     assert all("DD211" not in benchmark.notes for benchmark in benchmarks)
 
 
+def test_expanded_target_benchmarks_are_separate_diagnostic_suite() -> None:
+    benchmarks = expanded_target_benchmarks()
+
+    assert tuple(benchmark.name for benchmark in benchmarks) == (
+        "double-negation-introduction",
+        "contraposition",
+        "permutation-exchange",
+        "composition",
+        "encoded-conjunction-left-projection",
+        "encoded-conjunction-right-projection",
+        "encoded-conjunction-commutativity",
+    )
+    assert surface_pretty(benchmarks[0].target) == "p → ¬¬p"
+    assert surface_pretty(benchmarks[4].target) == "p ∧ q → p"
+    assert all("known proof" not in benchmark.notes.lower() for benchmark in benchmarks)
+
+
 def test_default_regression_benchmarks_are_required_success_targets() -> None:
     benchmarks = regression_benchmarks()
 
@@ -31,24 +48,29 @@ def test_default_regression_benchmarks_are_required_success_targets() -> None:
     )
 
 
-def test_run_benchmarks_parser_accepts_small_targets_and_overrides() -> None:
+def test_run_benchmarks_parser_accepts_suite_flags_and_overrides() -> None:
     parser = build_arg_parser()
     args = parser.parse_args(
         [
-            "--small-targets",
+            "--suite",
+            "expanded",
             "--seed",
             "3",
             "--beam-pair-budget",
             "123",
             "--beam-major-budget",
             "17",
+            "--beam-only",
+            "--strict",
         ]
     )
 
-    assert args.small_targets
+    assert args.suite == "expanded"
     assert args.seed == 3
     assert args.beam_pair_budget == 123
     assert args.beam_major_budget == 17
+    assert args.beam_only
+    assert args.strict
 
 
 def test_small_target_benchmarks_use_bounded_regression_settings() -> None:
@@ -77,6 +99,8 @@ def test_render_benchmark_result_runs_search_and_reports_required_fields() -> No
 
     assert "name: identity" in output
     assert "found exact proof:" in output
+    assert "found by:" in output
+    assert "found generation:" in output
     assert "best closed candidate:" in output
     assert "best schematic candidate:" in output
     assert "beam pair attempts:" in output

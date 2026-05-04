@@ -5,13 +5,17 @@ from math import ceil
 from time import perf_counter
 from typing import Callable
 
+from birdrat_proplogic.archive import empty_archive
+from birdrat_proplogic.beam import cd_beam_search_result
 from birdrat_proplogic.config import ProplogicConfig
-from birdrat_proplogic.evolution import EvolutionResult, GenerationStats, evolve
+from birdrat_proplogic.evolution import EvolutionResult, GenerationStats, ScoredProof, evolve
 from birdrat_proplogic.fitness import FitnessResult, total_fitness
 from birdrat_proplogic.formula import is_closed_formula
+from birdrat_proplogic.goals import extract_goals
 from birdrat_proplogic.proof import Invalid, Proof
 from birdrat_proplogic.profiling import RuntimeProfile, RuntimeProfiler
 from birdrat_proplogic.quality import behavior_descriptor, novelty_score
+from birdrat_proplogic.seed import formula_pool_from_target
 from birdrat_proplogic.surface import SurfaceFormula, desugar
 
 
@@ -44,6 +48,9 @@ class PhaseReport:
     beam_layer_counts: tuple
     population_size: int
     generations: int
+    found_by: str | None
+    found_generation: int | None
+    found_beam_layer: int | None
     result: EvolutionResult
 
 
@@ -56,6 +63,9 @@ class SearchResult:
     best_closed_candidate: Proof | None
     best_schematic_candidate: Proof | None
     best_novelty_candidate: Proof | None
+    found_by: str | None
+    found_generation: int | None
+    found_beam_layer: int | None
     total_runtime_seconds: float
     result: EvolutionResult
     runtime_profile: RuntimeProfile
@@ -137,6 +147,81 @@ def search_with_fallback(
     return _search_result(tuple(reports), runtime_total, profiler.snapshot())
 
 
+def search_beam_only(
+    target: SurfaceFormula,
+    config: ProplogicConfig,
+    seed: int | None = None,
+    profiler: RuntimeProfiler | None = None,
+) -> SearchResult:
+    del seed
+    started = perf_counter()
+    profiler = profiler or RuntimeProfiler(enabled=False)
+    reports: list[PhaseReport] = []
+    for phase in make_default_search_phases(config):
+        phase_config = _config_for_phase(config, phase)
+        phase_started = perf_counter()
+        result = _beam_only_phase_result(target, phase_config, profiler)
+        runtime = perf_counter() - phase_started
+        report = _phase_report(phase.name, result, phase_config, runtime)
+        reports.append(report)
+        if report.found_exact:
+            runtime_total = perf_counter() - started
+            profiler.add_time("total", runtime_total)
+            return _search_result(tuple(reports), runtime_total, profiler.snapshot())
+    runtime_total = perf_counter() - started
+    profiler.add_time("total", runtime_total)
+    return _search_result(tuple(reports), runtime_total, profiler.snapshot())
+
+
+def _beam_only_phase_result(
+    target: SurfaceFormula,
+    config: ProplogicConfig,
+    profiler: RuntimeProfiler,
+) -> EvolutionResult:
+    with profiler.section("generate_regions"):
+        regions = extract_goals(target, config)
+    core_target = desugar(target)
+    region_targets = tuple(region.core_theorem() for region in regions)
+    with profiler.section("formula_pool_construction"):
+        formula_pool = formula_pool_from_target(core_target, region_targets)
+    with profiler.section("beam.total"):
+        beam_result = cd_beam_search_result(core_target, regions, formula_pool, config, profiler=profiler)
+    population = beam_result.proofs
+    scored = tuple(
+        sorted(
+            (ScoredProof(proof, total_fitness(proof, core_target, regions, config)) for proof in population),
+            key=lambda item: item.fitness.score,
+            reverse=True,
+        )
+    )
+    if not scored:
+        # Disabled beam can produce an empty pool. Re-enable shallow seeding by using a zero-depth beam.
+        fallback_config = replace(config, evolution=replace(config.evolution, beam_enabled=True, beam_max_depth=0))
+        beam_result = cd_beam_search_result(core_target, regions, formula_pool, fallback_config, profiler=profiler)
+        population = beam_result.proofs
+        scored = tuple(
+            sorted(
+                (ScoredProof(proof, total_fitness(proof, core_target, regions, fallback_config)) for proof in population),
+                key=lambda item: item.fitness.score,
+                reverse=True,
+            )
+        )
+        config = fallback_config
+    best = scored[0]
+    return EvolutionResult(
+        target=target,
+        regions=regions,
+        archive=empty_archive(),
+        schema_archive=(),
+        behavior_archive_size=0,
+        population=population,
+        best=best,
+        history=(),
+        diagnostics_interval=config.evolution.diagnostics_interval,
+        beam_diagnostics=beam_result.diagnostics,
+    )
+
+
 def _config_for_phase(config: ProplogicConfig, phase: SearchPhase) -> ProplogicConfig:
     _validate_phase(phase)
     evolution = replace(
@@ -173,6 +258,10 @@ def _phase_report(
     best_schema = _best_schema_candidate(result.population, fitnesses)
     best_novelty = _best_novelty_candidate(result.population, fitnesses)
     best = result.best.fitness
+    found_by, found_layer = _beam_provenance(result)
+    found_generation = _first_exact_generation(result)
+    if best.exact_target and found_by is None:
+        found_by = "evolution" if found_generation is not None else "population"
     return PhaseReport(
         phase_name=phase_name,
         found_exact=best.exact_target,
@@ -188,6 +277,9 @@ def _phase_report(
         beam_layer_counts=result.beam_diagnostics.layer_counts,
         population_size=config.evolution.population_size,
         generations=len(result.history),
+        found_by=found_by if best.exact_target else None,
+        found_generation=found_generation if best.exact_target else None,
+        found_beam_layer=found_layer if best.exact_target else None,
         result=result,
     )
 
@@ -203,10 +295,29 @@ def _search_result(reports: tuple[PhaseReport, ...], runtime_seconds: float, run
         best_closed_candidate=_best_report_candidate(reports, "best_closed_candidate"),
         best_schematic_candidate=_best_report_candidate(reports, "best_schematic_candidate"),
         best_novelty_candidate=_best_report_candidate(reports, "best_novelty_candidate"),
+        found_by=solved.found_by if solved is not None else None,
+        found_generation=solved.found_generation if solved is not None else None,
+        found_beam_layer=solved.found_beam_layer if solved is not None else None,
         total_runtime_seconds=runtime_seconds,
         result=final_report.result,
         runtime_profile=runtime_profile,
     )
+
+
+def _first_exact_generation(result: EvolutionResult) -> int | None:
+    for stats in result.history:
+        if stats.best_exact or stats.exact_target_count > 0:
+            return stats.generation
+    return None
+
+
+def _beam_provenance(result: EvolutionResult) -> tuple[str | None, int | None]:
+    for layer in result.beam_diagnostics.layer_counts:
+        if layer.schema_instantiation_exact_target:
+            return "schema-instantiation", layer.depth
+        if layer.exact_target_survived_to_population:
+            return "beam", layer.depth
+    return None, None
 
 
 def _best_report_candidate(reports: tuple[PhaseReport, ...], field_name: str) -> Proof | None:

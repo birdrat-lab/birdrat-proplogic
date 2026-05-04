@@ -1,4 +1,4 @@
-# AGENTS.md — birdrat-proplogic: Reporting, Runtime Analysis, and Next Benchmark Stage
+# AGENTS.md — birdrat-proplogic: Expanded Benchmark Suite and Solver Provenance
 
 ## Project purpose
 
@@ -6,18 +6,20 @@
 
 The project searches for Hilbert-style proofs over the Łukasiewicz/Church `P₂` axiom schemata using condensed detachment (`CD`) as the internal inference rule. The long-term goal is to build a Lean-facing theorem generator whose proof search is restricted to an explicitly chosen set of valid logical moves.
 
-Lean integration is a future milestone, but **not the next milestone**.
+Lean integration is a future milestone, but **not the current milestone**.
 
-Do not add Lean integration yet. Do not add Mathlib integration yet. Do not use Lean automation to solve the current proof-search problem. The current priority is:
+The current priority is:
 
 ```text
-1. stabilize the current P₂ + CD proof-search core,
-2. improve user-facing reporting,
-3. archive full diagnostic reports,
-4. add runtime/profiling instrumentation,
-5. freeze the current benchmark suite as regression coverage,
-6. then add a slightly expanded benchmark suite.
+1. freeze the current five-target benchmark suite as regression coverage,
+2. add a slightly expanded target-only benchmark suite,
+3. make solver provenance explicit,
+4. distinguish beam-driven success from evolutionary/GP-driven success,
+5. preserve concise terminal output and archived detailed reports,
+6. use runtime analysis to understand where the next bottlenecks are.
 ```
+
+Do not add Lean integration yet.
 
 ---
 
@@ -123,7 +125,7 @@ Do **not** seed the search with external proof strings.
 
 The benchmark suite should consist of theorem targets only. The search system must attempt to find proofs of those targets using the internal proof-search machinery.
 
-It is acceptable that benchmark targets were selected because they are externally known to have short `P₂ + CD` proofs. But the implementation should not use known proofs during search, scoring, initialization, benchmarking, or verification.
+It is acceptable that benchmark targets were selected because they are externally known to be reasonable small propositional theorems. But the implementation should not use known proofs during search, scoring, initialization, benchmarking, or verification.
 
 The benchmark question is:
 
@@ -139,214 +141,612 @@ Can the tool replay a known proof?
 
 ---
 
-# Current milestone
+# Current solver architecture
 
-## Current success state
-
-The current small target-only benchmark suite is passing.
-
-Baseline targets:
+The solver is now best understood as a hybrid proof-search system:
 
 ```text
-1. identity:
-   p → p
-
-2. syllogism / functoriality:
-   (p → q) → (r → p) → r → q
-
-3. classical-negation:
-   ¬p → p → q
-
-4. contraction:
-   (p → p → q) → p → q
-
-5. distribution/application:
-   (p → q) → (p → q → r) → p → r
+target-directed P₂ + CD beam search
++ schema instantiation
++ quality-diverse/evolutionary selection layer
 ```
 
-These should now be treated as regression benchmarks.
+It is not currently a pure genetic-programming theorem prover.
 
-Expected behavior:
+For the current small benchmark suite, most successful work appears to happen in the beam before the evolutionary loop has many generations to operate. That is acceptable, but the reports should be explicit about proof provenance.
+
+Use this framing in comments, documentation, and reports:
 
 ```text
-identity:
-  must pass
-
-syllogism:
-  must pass
-
-classical-negation:
-  must pass
-
-contraction:
-  must pass
-
-distribution/application:
-  must pass
+The current solver is hybrid.
+The small benchmark suite currently validates the beam-driven proof-search core.
+The evolutionary machinery remains available as a fallback/exploration layer and may matter more on harder targets.
 ```
 
-The tests should require exact proof discovery, not merely high target similarity.
-
-Use loose upper bounds for proof metrics to avoid failing on harmless proof variation. For example:
-
-```text
-exact proof found: required
-CD steps: bounded but generous
-CD depth: bounded but generous
-proof size: bounded but generous
-runtime: reported, not initially enforced
-```
+Do not remove the evolutionary layer. Do not remove quality-diverse selection. But do not overstate its role when a proof was found by the beam.
 
 ---
 
-# Immediate next goal: reporting and runtime analysis
+# Baseline benchmark suite
 
-The next implementation priority is not a new proof-search heuristic. The next implementation priority is to make the tool easier to read and easier to analyze.
+The current five-target suite is now a regression suite.
 
-The user-facing output should say **less and more**:
-
-```text
-less:
-  less raw diagnostic noise printed to the terminal
-
-more:
-  clearer progress updates while running
-  clearer final summary
-  full detailed reports archived to files
-  runtime/profiling information preserved for analysis
-```
-
-Both the regular `run` command and the benchmark command should follow this policy.
-
----
-
-# User-facing reporting design
-
-## Terminal output should be concise
-
-The terminal should not dump full beam-layer diagnostics by default.
-
-During a run, print compact progress updates at a configurable interval, defaulting to every 10 generations.
-
-Suggested default:
-
-```text
---progress-interval 10
-```
-
-For very short benchmark runs with fewer than 10 generations, print at least generation 0 and the final generation.
-
-## Regular run progress output
-
-For:
-
-```bash
-PYTHONPATH=src python -m birdrat_proplogic.run 'target'
-```
-
-print something like:
-
-```text
-target: (p → q) → (p → q → r) → p → r
-phase: strict-preselected
-gen 0:  best=742.1  sim=0.61  exact=0  valid=0.97  closed=0.62  beam=4930  time=4.2s
-gen 10: best=901.4  sim=0.72  exact=0  valid=1.00  closed=0.70  beam=4930  time=12.9s
-gen 20: FOUND exact proof  cd=6  depth=4  size=13  time=18.4s
-```
-
-Keep each progress line short.
-
-Suggested fields:
-
-```text
-generation
-phase name
-best score
-best target similarity
-exact target count
-valid fraction
-closed fraction
-beam valid products or beam pool size
-elapsed time
-```
-
-Do not include by default:
-
-```text
-full proof tree
-full best schematic candidate
-full novelty candidate
-full beam layer counts
-full suffix diagnostics
-full schema-instantiation diagnostics
-axiom-family telemetry
-```
-
-Those belong in the archived full report.
-
-## Benchmark progress output
-
-For:
+It should remain available as:
 
 ```bash
 PYTHONPATH=src python -m birdrat_proplogic.run_benchmarks --small-targets
 ```
 
-print a compact per-target status.
+Baseline targets:
 
-Example:
+```text
+1. identity:
+   p ⊢ p
+   core: p → p
+
+2. syllogism / functoriality:
+   p → q, r → p, r ⊢ q
+   core: (p → q) → (r → p) → r → q
+
+3. classical-negation:
+   ¬p, p ⊢ q
+   core: ¬p → p → q
+
+4. contraction:
+   p → p → q, p ⊢ q
+   core: (p → p → q) → p → q
+
+5. distribution/application:
+   p → q, p → q → r, p ⊢ r
+   core: (p → q) → (p → q → r) → p → r
+```
+
+Expected behavior:
+
+```text
+identity:                  must pass
+syllogism:                 must pass
+classical-negation:         must pass
+contraction:               must pass
+distribution/application:   must pass
+```
+
+Each benchmark should require exact proof discovery, not merely high target similarity.
+
+Use loose upper bounds for proof metrics initially:
+
+```text
+CD steps: bounded generously
+CD depth: bounded generously
+proof size: bounded generously
+runtime: reported, not initially enforced
+```
+
+Do not use strict proof-size equality because the search may find different valid proofs after refactors.
+
+---
+
+# New expanded benchmark suite
+
+Add a second benchmark suite, separate from `--small-targets`.
+
+Suggested flag:
+
+```bash
+PYTHONPATH=src python -m birdrat_proplogic.run_benchmarks --expanded-targets
+```
+
+or:
+
+```bash
+PYTHONPATH=src python -m birdrat_proplogic.run_benchmarks --suite expanded
+```
+
+The expanded suite should remain target-only. It should not include hardcoded proofs.
+
+The expanded suite should be attempted only after the small suite passes.
+
+---
+
+## Expanded benchmark design goals
+
+The expanded targets should test the next layer of difficulty without jumping directly into encoded conjunction as the only objective.
+
+The suite should probe:
+
+```text
+1. double negation behavior,
+2. contraposition-style behavior,
+3. permutation/exchange of assumptions,
+4. composition of implications,
+5. simple encoded-connective projection,
+6. simple encoded-connective symmetry.
+```
+
+Use target formulas that are readable in sequent display form.
+
+---
+
+## Expanded benchmark candidates
+
+### Expanded 1: double-negation introduction
+
+Display:
+
+```text
+p ⊢ ¬¬p
+```
+
+Core:
+
+```text
+p → ¬¬p
+```
+
+Purpose:
+
+```text
+Tests classical/negation machinery in a small closed theorem.
+Should be easier than encoded conjunction but less trivial than identity.
+```
+
+Expected status:
+
+```text
+May pass with current strict beam.
+If not, should expose whether schema instantiation handles negated targets.
+```
+
+---
+
+### Expanded 2: contraposition-like theorem
+
+Display:
+
+```text
+p → q, ¬q ⊢ ¬p
+```
+
+Core:
+
+```text
+(p → q) → ¬q → ¬p
+```
+
+Purpose:
+
+```text
+Tests classical contrapositive behavior without using encoded conjunction.
+Useful bridge between classical-negation and encoded connective examples.
+```
+
+Expected status:
+
+```text
+May require fallback phases or stronger schema instantiation.
+```
+
+---
+
+### Expanded 3: permutation / exchange
+
+Display:
+
+```text
+p → q → r, q, p ⊢ r
+```
+
+Core:
+
+```text
+(p → q → r) → q → p → r
+```
+
+Purpose:
+
+```text
+Tests reordering of assumptions. This is important because Hilbert implication spines encode context order explicitly, and exchange is not a primitive inference rule.
+```
+
+Expected status:
+
+```text
+May be harder than distribution/application depending on current suffix retention.
+```
+
+---
+
+### Expanded 4: composition
+
+Display:
+
+```text
+q → r, p → q, p ⊢ r
+```
+
+Core:
+
+```text
+(q → r) → (p → q) → p → r
+```
+
+Purpose:
+
+```text
+Tests ordinary composition of implications. Similar to syllogism but with a different target spine.
+```
+
+Expected status:
+
+```text
+Should be a plausible next success after the five-target suite.
+```
+
+---
+
+### Expanded 5: encoded conjunction left projection
+
+Display:
+
+```text
+p ∧ q ⊢ p
+```
+
+Core:
+
+```text
+¬(p → ¬q) → p
+```
+
+Purpose:
+
+```text
+First encoded conjunction target. Important because surface syntax looks simple, but the core theorem is nontrivial under the project’s encoding.
+```
+
+Expected status:
+
+```text
+May fail initially. Failure should be reported cleanly.
+Do not add primitive conjunction elimination.
+```
+
+---
+
+### Expanded 6: encoded conjunction right projection
+
+Display:
+
+```text
+p ∧ q ⊢ q
+```
+
+Core:
+
+```text
+¬(p → ¬q) → q
+```
+
+Purpose:
+
+```text
+Second encoded conjunction projection. It should be compared against left projection to see whether one direction is substantially easier for the current search.
+```
+
+Expected status:
+
+```text
+May fail initially. Failure should be reported cleanly.
+Do not add primitive conjunction elimination.
+```
+
+---
+
+### Expanded 7: encoded conjunction commutativity
+
+Display:
+
+```text
+p ∧ q ⊢ q ∧ p
+```
+
+Core:
+
+```text
+¬(p → ¬q) → ¬(q → ¬p)
+```
+
+Purpose:
+
+```text
+First larger encoded-connective theorem. This was one of the original motivating examples and should remain a milestone target, not a baseline requirement.
+```
+
+Expected status:
+
+```text
+Likely harder. Do not require it to pass initially.
+Use it to inspect failure modes after projection benchmarks are attempted.
+```
+
+---
+
+## Expanded suite expected behavior
+
+Do not initially require all expanded targets to pass.
+
+Recommended expectation categories:
+
+```text
+must-pass:
+  small-target suite only
+
+expected-plausible:
+  double-negation introduction
+  composition
+
+expected-diagnostic:
+  contraposition
+  permutation
+  encoded conjunction left projection
+  encoded conjunction right projection
+  encoded conjunction commutativity
+```
+
+The expanded suite should report:
+
+```text
+found exact proof: yes/no
+solved phase
+found_by provenance
+CD steps
+CD depth
+proof size
+runtime
+best closed candidate
+best schematic candidate
+best similarity
+report path
+```
+
+A failing expanded benchmark should not fail the entire command unless an explicit `--strict` flag is used.
+
+Add:
+
+```text
+--strict
+```
+
+Meaning:
+
+```text
+exit nonzero if any selected benchmark target fails
+```
+
+Default:
+
+```text
+do not exit nonzero for expanded-suite failures
+```
+
+For the small suite, `--strict` may be enabled by default in CI/regression contexts.
+
+---
+
+# Sequent-style display
+
+The demos and reports should prefer sequent-style display over raw parenthesized implication chains.
+
+For any formula:
+
+```text
+A1 → A2 → ... → An → H
+```
+
+display:
+
+```text
+assumptions:
+  1. A1
+  2. A2
+  ...
+  n. An
+
+conclusion:
+  H
+```
+
+Also show the core formula when useful:
+
+```text
+core: A1 → A2 → ... → An → H
+```
+
+Examples:
+
+```text
+p → q, p → q → r, p ⊢ r
+```
+
+should be printed as:
+
+```text
+proving:
+  assumptions:
+    1. p → q
+    2. p → q → r
+    3. p
+  conclusion:
+    r
+core: (p → q) → (p → q → r) → p → r
+```
+
+For encoded conjunction:
+
+```text
+p ∧ q ⊢ p
+core: ¬(p → ¬q) → p
+```
+
+This makes it clear that the user-facing theorem is surface-level, while the proof search target is the encoded core formula.
+
+This is display/parsing sugar only. It does not add natural-deduction rules.
+
+---
+
+# Solver provenance
+
+Reports should distinguish where an exact proof first appeared.
+
+Add fields such as:
+
+```python
+found_by: Literal[
+    "beam",
+    "schema-instantiation",
+    "initial-population",
+    "mutation",
+    "crossover",
+    "selection",
+    "unknown",
+]
+
+found_phase: str
+found_generation: int | None
+found_beam_layer: int | None
+surfaced_generation: int | None
+```
+
+Use whatever subset is currently feasible, but at minimum report:
+
+```text
+solved in phase
+found generation
+found by beam vs evolution if known
+```
+
+Purpose:
+
+```text
+If a theorem is solved at generation 1 because the beam already produced the proof, the report should not imply that mutation/crossover evolved the proof in one generation.
+```
+
+Benchmark line example:
+
+```text
+distribution/application
+  strict-preselected: FOUND by beam, surfaced gen=1, cd=6 depth=4 size=13 time=72.4s
+```
+
+If provenance is uncertain:
+
+```text
+found_by: unknown
+```
+
+Do not fake provenance.
+
+---
+
+# Beam-only and no-beam diagnostic controls
+
+Add diagnostic flags:
+
+```text
+--beam-only
+--no-beam
+```
+
+These are diagnostic controls, not the main interface.
+
+## `--beam-only`
+
+Behavior:
+
+```text
+run beam search and schema instantiation
+skip mutation/crossover/evolution
+report whether exact proof was found
+```
+
+Purpose:
+
+```text
+Determine whether a benchmark is solved entirely by the beam/search substrate.
+```
+
+If all five small targets pass under `--beam-only`, then the current small suite is validating the beam prover rather than the evolutionary layer.
+
+## `--no-beam`
+
+Behavior:
+
+```text
+run population initialization, mutation, crossover, quality-diverse selection
+do not include beam-generated proof pool
+```
+
+Purpose:
+
+```text
+Measure whether the GP/evolutionary layer can solve anything independently.
+```
+
+Expected:
+
+```text
+The no-beam mode may fail on most nontrivial targets.
+That is useful diagnostic information, not a bug.
+```
+
+Do not make these flags the default. The default solver should remain the full hybrid pipeline.
+
+---
+
+# Reporting requirements
+
+Terminal output should remain concise.
+
+For benchmarks, use compact per-target progress:
 
 ```text
 [1/5] identity
   strict-preselected: FOUND cd=2 depth=2 size=5 time=0.7s
+```
 
-[2/5] syllogism
-  strict-preselected: FOUND cd=3 depth=3 size=7 time=20.1s
+With progress enabled:
 
-[3/5] classical-negation
-  strict-preselected: FOUND cd=3 depth=3 size=7 time=15.4s
-
-[4/5] contraction
-  strict-preselected: FOUND cd=3 depth=2 size=7 time=34.0s
-
-[5/5] distribution/application
-  strict-preselected: FOUND cd=6 depth=4 size=13 time=79.5s
+```text
+proving:
+  assumptions:
+    1. p → q
+    2. p → q → r
+    3. p
+  conclusion:
+    r
+core: (p → q) → (p → q → r) → p → r
+gen 0: strict-preselected best=-215.9 sim=0.31 exact=0 valid=0.97 closed=0.65 beam=16018 time=72.1s
+gen 1: strict-preselected FOUND best=10999857.5 sim=1.00 exact=1 beam=16018 time=72.4s
 ```
 
 At the end, print a compact table:
 
 ```text
 summary
-name                      found  phase               cd  depth  size  runtime
-identity                  yes    strict-preselected  2   2      5     0.7s
-syllogism                 yes    strict-preselected  3   3      7     20.1s
-classical-negation         yes    strict-preselected  3   3      7     15.4s
-contraction               yes    strict-preselected  3   2      7     34.0s
-distribution/application   yes    strict-preselected  6   4      13    79.5s
-
-full report: reports/benchmarks/small-targets-YYYYMMDD-HHMMSS.json
+name                      found phase               by     cd depth size runtime
+identity                  yes   strict-preselected  beam   2  2     5    0.7s
+distribution/application  yes   strict-preselected  beam   6  4     13   76.2s
 ```
 
-If a benchmark fails:
-
-```text
-distribution/application   no     none                -   -      -     120.0s
-  best closed: ...
-  best similarity: 0.74
-  full report: ...
-```
-
-Keep the terminal failure detail short.
+Full details belong in archived reports.
 
 ---
 
 # Full report archival
 
-## Full reports should be archived automatically
-
 By default, both `run` and `run_benchmarks` should save a full report to disk.
 
-Suggested default output directories:
+Suggested directories:
 
 ```text
 reports/runs/
@@ -358,51 +758,20 @@ Suggested filenames:
 ```text
 reports/runs/run-YYYYMMDD-HHMMSS.json
 reports/benchmarks/small-targets-YYYYMMDD-HHMMSS.json
+reports/benchmarks/expanded-targets-YYYYMMDD-HHMMSS.json
 ```
 
-Optionally also support Markdown reports:
-
-```text
-reports/runs/run-YYYYMMDD-HHMMSS.md
-reports/benchmarks/small-targets-YYYYMMDD-HHMMSS.md
-```
-
-Add CLI options:
-
-```text
---report-dir PATH
---no-report
---report-format json
---report-format md
---report-format both
-```
-
-Default:
-
-```text
---report-format json
-```
-
-or, if easy:
-
-```text
---report-format both
-```
-
-## Full report contents
-
-The archived full report should include everything needed to analyze the run.
-
-For a regular run:
+Full reports should include:
 
 ```text
 target surface formula
 core target formula
-generated regions
+sequent display
 configuration
 random seed
 phases attempted
 phase reports
+provenance fields
 progress snapshots
 final result
 best proof if found
@@ -416,189 +785,45 @@ axiom-family diagnostics
 runtime profile
 ```
 
-For benchmarks:
+Do not feed archived proofs back into future searches unless explicitly requested.
 
-```text
-benchmark suite name
-per-target configurations
-per-target result summaries
-per-target phase reports
-per-target proof metrics
-per-target runtime profile
-overall summary table
-```
-
-## Store found proofs
-
-When an exact proof is found, the report should store:
-
-```text
-surface target
-core target
-conclusion
-proof tree
-expanded numbered proof
-CD steps
-CD depth
-proof size
-formula size
-phase found
-seed/config
-```
-
-Do not feed archived proofs back into future searches unless explicitly requested. Reports are for inspection and regression analysis, not proof seeding.
+Reports are for inspection and regression analysis, not proof seeding.
 
 ---
 
 # Runtime analysis
 
-## Motivation
+Keep runtime profiling instrumentation.
 
-The benchmark suite now passes, but runtime varies substantially between targets. Before expanding the benchmark suite, add runtime analysis and profiling instrumentation.
-
-The goal is to understand where time is going:
-
-```text
-unification
-conclusion recomputation
-formula similarity
-schema instantiation
-proof substitution
-candidate deduplication
-beam pair generation
-beam candidate ranking
-fitness scoring
-quality-diverse selection
-```
-
-## Add a runtime profiler
-
-Implement a lightweight internal profiler.
-
-Suggested API:
-
-```python
-class RuntimeProfiler:
-    def start(section: str) -> None: ...
-    def stop(section: str) -> None: ...
-    def time_block(section: str): ...
-    def increment(counter: str, amount: int = 1) -> None: ...
-    def snapshot() -> RuntimeProfile: ...
-```
-
-or use a simple context manager:
-
-```python
-with profiler.section("beam.pair_generation"):
-    ...
-```
-
-Do not over-engineer.
-
-## Sections to time
-
-At minimum, time:
+At minimum, continue reporting:
 
 ```text
 total
-parse_surface
-generate_regions
-formula_pool_construction
-beam.total
-beam.seed_generation
-beam.pair_generation
-beam.try_cd
-beam.retention
-beam.suffix_retention
-beam.schema_instantiation
-evolution.total
-evolution.scoring
-evolution.selection
-evolution.mutation
-quality.novelty
-fitness.total
-unify.total
-conclusion.total
-formula_similarity.total
-report_writing
+beam
+schema instantiation
+fitness
+selection
 ```
 
-## Counters to track
-
-At minimum, count:
+Prefer to include more detail in archived reports:
 
 ```text
-unify.calls
-unify.successes
-unify.failures
-
-conclusion.calls
-
-formula_similarity.calls
-
-try_cd.calls
-try_cd.valid
-try_cd.invalid
-
-beam.pairs_considered
-beam.pairs_attempted
-beam.valid_products
-beam.closed_products
-beam.schematic_products
-
-schema_instantiation.attempts
-schema_instantiation.valid
-schema_instantiation.closed
-schema_instantiation.exact_target
-schema_instantiation.exact_region
-schema_instantiation.exact_suffix
-
-dedup.input_count
-dedup.output_count
-
-fitness.calls
+unification
+conclusion computation
+formula similarity
+candidate deduplication
+beam pair generation
+beam candidate ranking
+suffix retention
+schema instantiation
+mutation
+crossover
+report writing
 ```
 
-## Runtime report output
+Before optimizing, inspect profiling data.
 
-Terminal output should include only a compact runtime summary, for example:
-
-```text
-runtime summary:
-  total: 79.5s
-  beam: 72.1s
-  schema instantiation: 18.4s
-  unification: 25.7s
-  fitness: 8.3s
-  report: 0.2s
-```
-
-The archived full report should include the complete profile.
-
-## Optional detailed profile command
-
-Add:
-
-```text
---profile
-```
-
-Behavior:
-
-```text
-- include compact runtime summary in terminal
-- save full runtime profile in report
-```
-
-If profiling overhead is small, it may be enabled by default for benchmarks.
-
----
-
-# Caching and performance follow-up
-
-After runtime instrumentation is in place, use the profile to decide what to cache or optimize.
-
-Likely candidates:
+Likely future optimization targets:
 
 ```text
 conclusion(proof)
@@ -613,162 +838,17 @@ proof metrics:
   proof_size
 ```
 
-Do not blindly cache everything before profiling. Add instrumentation first, inspect the data, then optimize.
-
-Possible cache implementation:
-
-```python
-functools.lru_cache
-```
-
-works best when formulas/proofs are immutable and hashable.
-
-If proof objects are large, consider caching by object identity or canonical structural key.
-
----
-
-# Proof minimization: next after profiling, not now
-
-Proof minimization is desirable but should wait until reporting and runtime analysis are stable.
-
-Future proof-minimization ideas:
-
-```text
-given exact proof P:
-  verify P
-  canonicalize metavariable names
-  deduplicate identical subproofs/conclusions
-  try greedy subtree replacement from archive
-  rerun bounded search for the same conclusion with smaller size
-  reverify minimized proof
-```
-
-Do not implement proof minimization in this reporting/profiling milestone unless explicitly requested.
-
----
-
-# Slightly expanded benchmark suite: next after runtime analysis
-
-After reporting and runtime profiling are in place, add a slightly expanded benchmark suite.
-
-Do not jump directly to encoded conjunction as the only next target.
-
-Suggested next tier:
-
-```text
-double-negation introduction:
-  p → ¬¬p
-
-contraposition-like:
-  (p → q) → ¬q → ¬p
-
-permutation:
-  (p → q → r) → q → p → r
-
-composition:
-  (q → r) → (p → q) → p → r
-```
-
-Then return to encoded connective targets:
-
-```text
-encoded left projection:
-  p ∧ q → p
-  core: ¬(p → ¬q) → p
-
-encoded right projection:
-  p ∧ q → q
-  core: ¬(p → ¬q) → q
-
-encoded conjunction commutativity:
-  p ∧ q → q ∧ p
-  core: ¬(p → ¬q) → ¬(q → ¬p)
-```
-
-Add these as target-only benchmarks. Do not hardcode proofs.
-
----
-
-# Regular run and benchmark run should share reporting infrastructure
-
-Avoid duplicating reporting logic.
-
-Implement shared data structures where possible:
-
-```python
-RunSummary
-BenchmarkSummary
-PhaseReport
-ProgressSnapshot
-RuntimeProfile
-ProofReport
-```
-
-Both commands should use the same report writer.
-
-Suggested modules:
-
-```text
-reporting.py
-profiling.py
-```
-
-or similar.
-
----
-
-# CLI changes
-
-Suggested additions:
-
-```text
---progress-interval N
---report-dir PATH
---report-format json|md|both
---no-report
---profile
---quiet
---verbose
-```
-
-Default behavior:
-
-```text
-progress interval: 10 generations
-report: enabled
-report format: json
-profile: enabled for benchmarks, optional for single runs
-quiet: false
-verbose: false
-```
-
-`--verbose` may print more diagnostic detail to terminal, but the default should remain concise.
-
-`--quiet` should print only final summary and report path.
+Do not blindly optimize before profiling.
 
 ---
 
 # Regression expectations
 
-After this milestone:
+## Small suite
 
-```text
-run_benchmarks --small-targets
-```
+The small suite should be treated as regression coverage.
 
-should:
-
-```text
-- solve all five current targets,
-- print compact per-target progress,
-- print a compact final summary table,
-- write a full report to disk,
-- include runtime profile data in the report.
-```
-
-The current passing suite should not regress.
-
-Expected baseline:
+Expected:
 
 ```text
 identity: found
@@ -776,6 +856,55 @@ syllogism: found
 classical-negation: found
 contraction: found
 distribution/application: found
+```
+
+## Expanded suite
+
+The expanded suite is diagnostic at first.
+
+Expected:
+
+```text
+double-negation introduction:
+  plausible
+
+composition:
+  plausible
+
+contraposition:
+  diagnostic
+
+permutation:
+  diagnostic
+
+encoded conjunction left projection:
+  diagnostic
+
+encoded conjunction right projection:
+  diagnostic
+
+encoded conjunction commutativity:
+  diagnostic/milestone
+```
+
+Do not fail the whole run if expanded targets fail unless `--strict` is specified.
+
+---
+
+# Implementation order
+
+Recommended order:
+
+```text
+1. Preserve current small-target benchmark behavior.
+2. Add provenance fields to results and reports.
+3. Add --beam-only and --no-beam diagnostic flags.
+4. Add expanded benchmark suite definitions.
+5. Add compact summary output for expanded benchmarks.
+6. Add archived report support for expanded benchmarks.
+7. Run small suite in default, beam-only, and no-beam modes.
+8. Run expanded suite in default mode.
+9. Use runtime profile and failure reports to choose the next structural improvement.
 ```
 
 ---
@@ -793,20 +922,19 @@ surface-level conjunction elimination as a primitive rule
 hardcoded known proofs
 proof-string replay as benchmark logic
 large external proof database ingestion
-more one-off bad-shape penalties
+one-off bad-shape penalties
 axiom-family selection bonuses
 target-specific axiom preferences
 proof minimization
-expanded benchmark suite before reporting/profiling is stable
 ```
 
-Lean integration is an upcoming milestone after:
+Lean integration should come after:
 
 ```text
-1. current benchmark suite is stable,
-2. reporting is usable,
-3. runtime analysis is available,
-4. a slightly expanded suite has been attempted.
+1. small suite is stable,
+2. expanded suite has been attempted,
+3. solver provenance is reported,
+4. reporting/profiling is usable.
 ```
 
 ---
@@ -816,26 +944,17 @@ Lean integration is an upcoming milestone after:
 Current status:
 
 ```text
-The tool now passes the five-target P₂ + CD benchmark suite.
+The tool passes the five-target P₂ + CD benchmark suite.
+The current solver is hybrid and beam-driven on these examples.
 ```
 
-Immediate next milestone:
+Next milestone:
 
 ```text
-concise progress output
-+ compact final summaries
-+ archived full reports
-+ runtime profiling
+expanded target-only benchmark suite
++ solver provenance
++ beam-only/no-beam diagnostics
++ continued concise reporting and full archived reports
 ```
 
-Then:
-
-```text
-slightly expanded benchmark suite
-```
-
-Then later:
-
-```text
-Lean integration
-```
+Lean integration comes later, not yet.

@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 
-from birdrat_proplogic.benchmarks import SearchBenchmark, regression_benchmarks, small_target_benchmarks
+from birdrat_proplogic.benchmarks import (
+    SearchBenchmark,
+    expanded_target_benchmarks,
+    regression_benchmarks,
+    small_target_benchmarks,
+)
 from birdrat_proplogic.fitness import total_fitness
 from birdrat_proplogic.formula import is_closed_formula, pretty
 from birdrat_proplogic.proof import Invalid
@@ -11,13 +16,15 @@ from birdrat_proplogic.proof import proof_pretty
 from birdrat_proplogic.profiling import RuntimeProfile, RuntimeProfiler, compact_runtime_summary
 from birdrat_proplogic.quality import behavior_descriptor, novelty_score
 from birdrat_proplogic.reporting import timestamp, write_report
-from birdrat_proplogic.search import PhaseReport, search_with_fallback
+from birdrat_proplogic.search import PhaseReport, search_beam_only, search_with_fallback
 from birdrat_proplogic.surface import desugar, surface_display, surface_pretty, surface_sequent_pretty
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m birdrat_proplogic.run_benchmarks")
+    parser.add_argument("--suite", choices=("regression", "small", "expanded"), help="benchmark suite to run")
     parser.add_argument("--small-targets", action="store_true", help="run all five small target-only benchmarks")
+    parser.add_argument("--expanded-targets", action="store_true", help="run the expanded diagnostic target-only benchmarks")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--max-generations", type=int)
     parser.add_argument("--population-size", type=int)
@@ -25,7 +32,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--beam-max-depth", type=int)
     parser.add_argument("--beam-major-budget", type=int)
     parser.add_argument("--beam-pair-budget", type=int)
+    parser.add_argument("--beam-only", action="store_true", help="run only the cascading beam search phases")
+    parser.add_argument("--no-beam", action="store_true", help="disable beam seeding and run evolution only")
     parser.add_argument("--keep-going", action="store_true")
+    parser.add_argument("--strict", action="store_true", help="return a failing exit code if any selected benchmark is not solved")
     parser.add_argument("--progress-interval", type=int, default=10)
     parser.add_argument("--report-dir", default="reports/benchmarks")
     parser.add_argument("--report-format", choices=("json", "md", "both"), default="json")
@@ -40,9 +50,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    suite = small_target_benchmarks() if args.small_targets else regression_benchmarks()
+    if args.beam_only and args.no_beam:
+        parser.error("--beam-only and --no-beam are mutually exclusive")
+    suite_name, suite = _selected_suite(args)
     benchmarks = tuple(_override_config(benchmark, args) for benchmark in suite)
-    suite_name = "small-targets" if args.small_targets else "regression"
     results = []
     for index, benchmark in enumerate(benchmarks):
         if not args.quiet:
@@ -55,13 +66,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    {line}")
             print(f"  core: {pretty(desugar(benchmark.target))}")
         profiler = RuntimeProfiler(enabled=True)
-        search = search_with_fallback(
-            benchmark.target,
-            benchmark.config,
-            seed=args.seed,
-            profiler=profiler,
-            progress_callback=_benchmark_progress_printer(args.progress_interval, args.quiet),
-        )
+        if args.beam_only:
+            search = search_beam_only(benchmark.target, benchmark.config, seed=args.seed, profiler=profiler)
+        else:
+            search = search_with_fallback(
+                benchmark.target,
+                benchmark.config,
+                seed=args.seed,
+                profiler=profiler,
+                progress_callback=_benchmark_progress_printer(args.progress_interval, args.quiet),
+            )
         results.append((benchmark, search))
         if args.verbose:
             print(render_benchmark_search_result(benchmark, search))
@@ -88,7 +102,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         if not args.quiet:
             print(f"full report: {', '.join(str(path) for path in report_paths)}")
+    if args.strict and any(not search.found for _benchmark, search in results):
+        return 1
     return 0
+
+
+def _selected_suite(args: argparse.Namespace) -> tuple[str, tuple[SearchBenchmark, ...]]:
+    if args.suite == "expanded" or args.expanded_targets:
+        return "expanded-targets", expanded_target_benchmarks()
+    if args.suite == "small" or args.small_targets:
+        return "small-targets", small_target_benchmarks()
+    return "regression", regression_benchmarks()
 
 
 def render_benchmark_result(benchmark: SearchBenchmark, seed: int | None = None) -> str:
@@ -116,6 +140,9 @@ def render_benchmark_search_result(benchmark: SearchBenchmark, search) -> str:
         f"expected status: {benchmark.expected_status}",
         f"found exact proof: {search.found}",
         f"solved in phase: {search.solved_in_phase or 'none'}",
+        f"found by: {search.found_by or 'none'}",
+        f"found generation: {_optional_number(search.found_generation)}",
+        f"found beam layer: {_optional_number(search.found_beam_layer)}",
         f"best closed candidate: {_candidate_text(best_closed)}",
         f"best schematic candidate: {_candidate_text(best_schema)}",
         f"best novelty candidate: {_candidate_text(best_novelty)}",
@@ -145,8 +172,11 @@ def render_benchmark_search_result(benchmark: SearchBenchmark, search) -> str:
 def _benchmark_status_line(search) -> str:
     best = search.result.best.fitness
     if search.found:
+        provenance = search.found_by or "unknown"
+        generation = _optional_number(search.found_generation)
+        layer = _optional_number(search.found_beam_layer)
         return (
-            f"{search.solved_in_phase}: FOUND cd={best.cd_steps} "
+            f"{search.solved_in_phase}: FOUND by={provenance} gen={generation} beam_layer={layer} cd={best.cd_steps} "
             f"depth={best.cd_depth} size={best.proof_size} time={search.total_runtime_seconds:.1f}s"
         )
     return (
@@ -186,17 +216,19 @@ def _benchmark_progress_printer(interval: int, quiet: bool):
 def _summary_table(results) -> str:
     lines = [
         "summary",
-        f"{'name':25} {'found':5} {'phase':18} {'cd':>3} {'depth':>5} {'size':>5} {'runtime':>8}",
+        f"{'name':38} {'found':5} {'phase':18} {'by':22} {'gen':>4} {'cd':>3} {'depth':>5} {'size':>5} {'runtime':>8}",
     ]
     for benchmark, search in results:
         best = search.result.best.fitness
         found = "yes" if search.found else "no"
         phase = search.solved_in_phase or "none"
+        found_by = search.found_by or "-"
+        generation = _optional_number(search.found_generation) if search.found else "-"
         cd = str(best.cd_steps) if search.found else "-"
         depth = str(best.cd_depth) if search.found else "-"
         size = str(best.proof_size) if search.found else "-"
         lines.append(
-            f"{benchmark.name:25} {found:5} {phase:18} {cd:>3} {depth:>5} {size:>5} {search.total_runtime_seconds:>7.1f}s"
+            f"{benchmark.name:38} {found:5} {phase:18} {found_by:22} {generation:>4} {cd:>3} {depth:>5} {size:>5} {search.total_runtime_seconds:>7.1f}s"
         )
         if not search.found:
             lines.append(f"  best similarity: {best.target_similarity:.3f}")
@@ -211,6 +243,9 @@ def _benchmark_report_payload(suite_name: str, results, seed: int | None) -> dic
                 "name": benchmark.name,
                 "found": search.found,
                 "solved_in_phase": search.solved_in_phase,
+                "found_by": search.found_by,
+                "found_generation": search.found_generation,
+                "found_beam_layer": search.found_beam_layer,
                 "runtime_seconds": search.total_runtime_seconds,
                 "cd_steps": search.result.best.fitness.cd_steps,
                 "cd_depth": search.result.best.fitness.cd_depth,
@@ -229,6 +264,9 @@ def _benchmark_report_payload(suite_name: str, results, seed: int | None) -> dic
                 "surface_display": surface_display(benchmark.target),
                 "core_target": pretty(desugar(benchmark.target)),
                 "search_result": search,
+                "found_by": search.found_by,
+                "found_generation": search.found_generation,
+                "found_beam_layer": search.found_beam_layer,
                 "history": search.result.history,
                 "beam_diagnostics": search.result.beam_diagnostics,
                 "best_proof": proof_pretty(search.result.best.proof),
@@ -265,7 +303,13 @@ def _override_config(benchmark: SearchBenchmark, args: argparse.Namespace) -> Se
             evolution = replace(evolution, **{field_name: value})
     if args.keep_going:
         evolution = replace(evolution, stop_on_exact=False)
+    if args.no_beam:
+        evolution = replace(evolution, beam_enabled=False)
     return replace(benchmark, config=replace(benchmark.config, evolution=evolution))
+
+
+def _optional_number(value: int | None) -> str:
+    return "none" if value is None else str(value)
 
 
 def _best_closed_candidate(fitnesses):
@@ -328,6 +372,9 @@ def _phase_lines(reports: tuple[PhaseReport, ...]) -> list[str]:
             [
                 f"  {report.phase_name}:",
                 f"    found: {report.found_exact}",
+                f"    found by: {report.found_by or 'none'}",
+                f"    found generation: {_optional_number(report.found_generation)}",
+                f"    found beam layer: {_optional_number(report.found_beam_layer)}",
                 f"    best closed: {_proof_text(report.best_closed_candidate, report)}",
                 f"    best schematic: {_proof_text(report.best_schematic_candidate, report)}",
                 f"    best novelty: {_proof_text(report.best_novelty_candidate, report)}",

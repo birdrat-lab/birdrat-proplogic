@@ -61,6 +61,67 @@ def regression_benchmarks() -> tuple[SearchBenchmark, ...]:
     return (benchmarks[0], benchmarks[1], benchmarks[3])
 
 
+def expanded_target_benchmarks() -> tuple[SearchBenchmark, ...]:
+    base = EvolutionConfig(
+        population_size=40,
+        max_generations=40,
+        beam_width=60,
+        beam_max_depth=4,
+        beam_pair_budget=5000,
+    )
+    return (
+        _benchmark(
+            "double-negation-introduction",
+            r"p |- \not \not p",
+            "Checks whether a simple classical target is reachable without adding a surface-level rule.",
+            base,
+            "plausible expanded target",
+        ),
+        _benchmark(
+            "contraposition",
+            r"p \to q, \not q |- \not p",
+            "Diagnostic target for implication plus negation interaction.",
+            base,
+            "diagnostic expanded target; may fail while search substrate improves",
+        ),
+        _benchmark(
+            "permutation-exchange",
+            r"p \to q \to r, q, p |- r",
+            "Tests whether antecedent order can be rearranged by P2 plus CD search.",
+            base,
+            "diagnostic expanded target; may fail while search substrate improves",
+        ),
+        _benchmark(
+            "composition",
+            r"q \to r, p \to q, p |- r",
+            "A second syllogism-like composition target with a different antecedent order.",
+            base,
+            "plausible expanded target",
+        ),
+        _benchmark(
+            "encoded-conjunction-left-projection",
+            r"p \land q |- p",
+            "Surface conjunction is desugared to core implication/negation; no projection rule is added.",
+            base,
+            "diagnostic expanded target; expected to be nontrivial",
+        ),
+        _benchmark(
+            "encoded-conjunction-right-projection",
+            r"p \land q |- q",
+            "Surface conjunction is desugared to core implication/negation; no projection rule is added.",
+            base,
+            "diagnostic expanded target; expected to be nontrivial",
+        ),
+        _benchmark(
+            "encoded-conjunction-commutativity",
+            r"p \land q |- q \land p",
+            "Milestone diagnostic for encoded conjunction reasoning without primitive conjunction rules.",
+            base,
+            "diagnostic milestone target; may fail while search substrate improves",
+        ),
+    )
+
+
 def _benchmark(
     name: str,
     target_text: str,
