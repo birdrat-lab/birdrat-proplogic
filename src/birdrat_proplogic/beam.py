@@ -28,6 +28,7 @@ from birdrat_proplogic.proof import (
     proof_size,
 )
 from birdrat_proplogic.quality import behavior_descriptor, lemma_schema_score, novelty_score
+from birdrat_proplogic.quality import uses_ax1, uses_ax2, uses_ax3
 from birdrat_proplogic.seed import try_make_cd
 from birdrat_proplogic.unify import UnifyFailure, Substitution, unify
 
@@ -44,6 +45,12 @@ class BeamLayerStats:
     schematic_products: int
     closed_survivors: int
     schematic_survivors: int
+    generated_ax1_fraction: float
+    generated_ax2_fraction: float
+    generated_ax3_fraction: float
+    kept_ax1_fraction: float
+    kept_ax2_fraction: float
+    kept_ax3_fraction: float
 
 
 @dataclass(frozen=True)
@@ -121,17 +128,17 @@ def cd_beam_search_result(
             width,
         )
         layers.append(
-            BeamLayerStats(
-                depth=depth,
-                pair_pool_size=len(pair_pool),
-                major_candidates=min(major_budget, len([proof for proof in pair_pool if implication_major_parts(proof) is not None])),
-                compatible_minor_candidates=compatible_count,
-                pair_attempts=len(pairs),
-                valid_products=len(new),
-                closed_products=len(closed),
-                schematic_products=len(schematic),
-                closed_survivors=len(kept_closed),
-                schematic_survivors=len(kept_schematic),
+            _beam_layer_stats(
+                depth,
+                pair_pool,
+                pairs,
+                compatible_count,
+                new,
+                closed,
+                schematic,
+                kept_closed,
+                kept_schematic,
+                major_budget,
             )
         )
         if not new:
@@ -156,6 +163,52 @@ def cd_beam_search_result(
     return BeamSearchResult(tuple(_dedupe(known)), diagnostics)
 
 
+def _beam_layer_stats(
+    depth: int,
+    pair_pool: tuple[Proof, ...],
+    pairs: tuple[tuple[float, Proof, Proof], ...],
+    compatible_count: int,
+    new: list[Proof],
+    closed: tuple[Proof, ...],
+    schematic: tuple[Proof, ...],
+    kept_closed: tuple[Proof, ...],
+    kept_schematic: tuple[Proof, ...],
+    major_budget: int,
+) -> BeamLayerStats:
+    kept = kept_closed + kept_schematic
+    generated_fractions = axiom_family_fractions(tuple(new))
+    kept_fractions = axiom_family_fractions(kept)
+    return BeamLayerStats(
+        depth=depth,
+        pair_pool_size=len(pair_pool),
+        major_candidates=min(major_budget, len([proof for proof in pair_pool if implication_major_parts(proof) is not None])),
+        compatible_minor_candidates=compatible_count,
+        pair_attempts=len(pairs),
+        valid_products=len(new),
+        closed_products=len(closed),
+        schematic_products=len(schematic),
+        closed_survivors=len(kept_closed),
+        schematic_survivors=len(kept_schematic),
+        generated_ax1_fraction=generated_fractions[0],
+        generated_ax2_fraction=generated_fractions[1],
+        generated_ax3_fraction=generated_fractions[2],
+        kept_ax1_fraction=kept_fractions[0],
+        kept_ax2_fraction=kept_fractions[1],
+        kept_ax3_fraction=kept_fractions[2],
+    )
+
+
+def axiom_family_fractions(proofs: tuple[Proof, ...]) -> tuple[float, float, float]:
+    if not proofs:
+        return (0.0, 0.0, 0.0)
+    total = len(proofs)
+    return (
+        sum(1 for proof in proofs if uses_ax1(proof)) / total,
+        sum(1 for proof in proofs if uses_ax2(proof)) / total,
+        sum(1 for proof in proofs if uses_ax3(proof)) / total,
+    )
+
+
 def implication_major_parts(proof: Proof) -> tuple[Formula, Formula] | None:
     proof_conclusion = conclusion(proof)
     if not isinstance(proof_conclusion, Imp):
@@ -164,30 +217,51 @@ def implication_major_parts(proof: Proof) -> tuple[Formula, Formula] | None:
 
 
 def major_priority(major: Proof, target: Formula, regions: tuple[Goal, ...]) -> float:
+    return major_priority_with_config(major, target, regions, DEFAULT_CONFIG)
+
+
+def major_priority_with_config(
+    major: Proof,
+    target: Formula,
+    regions: tuple[Goal, ...],
+    config: ProplogicConfig,
+) -> float:
     parts = implication_major_parts(major)
     if parts is None:
         return float("-inf")
     antecedent, consequent = parts
-    targets = (target,) + tuple(region.core_theorem() for region in regions)
+    evolution_config = config.evolution
+    targets = target_and_region_suffixes(target, regions)
     exact = 1.0 if consequent in targets else 0.0
+    suffix_score = suffix_priority(consequent, target, regions)
     unifies = 1.0 if _unifies_with_any(consequent, targets) else 0.0
     head_match = 1.0 if _same_final_head_as_any(consequent, targets) else 0.0
     vacuous = 1.0 if is_vacuous_cd(major) else 0.0
     return (
-        2_000.0 * exact
-        + 1_000.0 * best_consequent_similarity(consequent, target, regions)
-        + 500.0 * unifies
-        + 250.0 * best_directed_similarity(consequent, target, regions)
-        + 100.0 * head_match
-        - 2.0 * formula_size(antecedent)
-        - 1.0 * proof_size(major)
-        - 5.0 * cd_steps(major)
-        - 0.2 * total_formula_size(major)
-        - 250.0 * vacuous
+        evolution_config.beam_suffix_match_weight * max(exact, suffix_score)
+        + evolution_config.beam_consequent_similarity_weight * best_consequent_similarity(consequent, target, regions)
+        + evolution_config.beam_unification_weight * unifies
+        + evolution_config.beam_directed_similarity_weight * best_directed_similarity(consequent, target, regions)
+        + evolution_config.beam_head_match_weight * head_match
+        - evolution_config.beam_antecedent_size_penalty * formula_size(antecedent)
+        - evolution_config.beam_major_proof_size_penalty * proof_size(major)
+        - evolution_config.beam_major_cd_step_penalty * cd_steps(major)
+        - evolution_config.beam_major_formula_size_penalty * total_formula_size(major)
+        - evolution_config.beam_vacuous_penalty * vacuous
     )
 
 
 def pair_priority(major: Proof, minor: Proof, target: Formula, regions: tuple[Goal, ...]) -> float:
+    return pair_priority_with_config(major, minor, target, regions, DEFAULT_CONFIG)
+
+
+def pair_priority_with_config(
+    major: Proof,
+    minor: Proof,
+    target: Formula,
+    regions: tuple[Goal, ...],
+    config: ProplogicConfig,
+) -> float:
     parts = implication_major_parts(major)
     if parts is None:
         return float("-inf")
@@ -198,11 +272,12 @@ def pair_priority(major: Proof, minor: Proof, target: Formula, regions: tuple[Go
     subst = unify(antecedent, minor_conclusion)
     if isinstance(subst, UnifyFailure):
         return float("-inf")
-    closed_minor_bonus = 25.0 if is_closed_formula(minor_conclusion) else 0.0
+    evolution_config = config.evolution
+    closed_minor_bonus = evolution_config.beam_closed_minor_bonus if is_closed_formula(minor_conclusion) else 0.0
     return (
-        major_priority(major, target, regions)
-        - 1.0 * proof_size(minor)
-        - 0.5 * substitution_size(subst)
+        major_priority_with_config(major, target, regions, config)
+        - evolution_config.beam_minor_proof_size_penalty * proof_size(minor)
+        - evolution_config.beam_substitution_size_penalty * substitution_size(subst)
         + closed_minor_bonus
     )
 
@@ -219,7 +294,7 @@ def prioritized_candidate_pairs(
     index = build_minor_shape_index(proof_pool)
     majors = sorted(
         (proof for proof in proof_pool if implication_major_parts(proof) is not None),
-        key=lambda proof: major_priority(proof, target, regions),
+        key=lambda proof: major_priority_with_config(proof, target, regions, config),
         reverse=True,
     )[:major_budget]
 
@@ -233,7 +308,7 @@ def prioritized_candidate_pairs(
         minors = tuple(compatible_minor_candidates(antecedent, proof_pool, index))
         compatible_count += len(minors)
         for minor in minors:
-            priority = pair_priority(major, minor, target, regions)
+            priority = pair_priority_with_config(major, minor, target, regions, config)
             if isfinite(priority):
                 pairs.append((priority, major, minor))
 
@@ -277,6 +352,37 @@ def compatible_minor_candidates(
 
 def substitution_size(subst: Substitution) -> int:
     return sum(formula_size(formula) for formula in subst.values())
+
+
+def implication_spine_suffixes(formula: Formula) -> tuple[Formula, ...]:
+    antecedents, head = implication_spine(formula)
+    suffixes: list[Formula] = [head]
+    current = head
+    for antecedent in reversed(antecedents):
+        current = Imp(antecedent, current)
+        suffixes.append(current)
+    return tuple(suffixes)
+
+
+def target_and_region_suffixes(target: Formula, regions: tuple[Goal, ...]) -> tuple[Formula, ...]:
+    suffixes: list[Formula] = []
+    seen: set[Formula] = set()
+    for formula in (target,) + tuple(region.core_theorem() for region in regions):
+        for suffix in implication_spine_suffixes(formula):
+            if suffix in seen:
+                continue
+            seen.add(suffix)
+            suffixes.append(suffix)
+    return tuple(suffixes)
+
+
+def suffix_priority(candidate: Formula, target: Formula, regions: tuple[Goal, ...]) -> float:
+    suffixes = target_and_region_suffixes(target, regions)
+    if candidate in suffixes:
+        return 1.0
+    if _unifies_with_any(candidate, suffixes):
+        return 0.85
+    return max(best_directed_similarity(candidate, suffix, ()) for suffix in suffixes)
 
 
 def seeded_axiom_instances(formula_pool: tuple[Formula, ...], width: int) -> tuple[Proof, ...]:

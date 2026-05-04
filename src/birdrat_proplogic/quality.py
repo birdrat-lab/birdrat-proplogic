@@ -111,7 +111,6 @@ def behavior_distance(left: BehaviorDescriptor, right: BehaviorDescriptor) -> fl
     distance += min(1.0, abs(left.cd_steps - right.cd_steps) / 8.0)
     distance += min(1.0, abs(left.substantive_cd_steps - right.substantive_cd_steps) / 8.0)
     distance += min(1.0, abs(left.proof_depth - right.proof_depth) / 6.0)
-    distance += sum(abs(a - b) for a, b in zip(left.axiom_counts, right.axiom_counts)) / 10.0
     if left.root_symbol != right.root_symbol:
         distance += 0.5
     if left.final_head_shape != right.final_head_shape:
@@ -394,6 +393,18 @@ def axiom_counts(proof: Proof) -> tuple[int, int, int]:
             left = axiom_counts(major)
             right = axiom_counts(minor)
             return tuple(a + b for a, b in zip(left, right))  # type: ignore[return-value]
+
+
+def uses_ax1(proof: Proof) -> bool:
+    return axiom_counts(proof)[0] > 0
+
+
+def uses_ax2(proof: Proof) -> bool:
+    return axiom_counts(proof)[1] > 0
+
+
+def uses_ax3(proof: Proof) -> bool:
+    return axiom_counts(proof)[2] > 0
 
 
 def jaccard_distance(left: frozenset[str], right: frozenset[str]) -> float:

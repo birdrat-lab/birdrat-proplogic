@@ -48,3 +48,4 @@ def test_render_benchmark_result_runs_search_and_reports_required_fields() -> No
     assert "best schematic candidate:" in output
     assert "beam pair attempts:" in output
     assert "beam valid products:" in output
+    assert "schema instantiation products:" in output

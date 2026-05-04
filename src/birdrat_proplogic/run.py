@@ -201,6 +201,7 @@ def _diagnostic_lines(result: EvolutionResult) -> list[str]:
             f"closed={item.closed_fraction:.2f}, schematic={item.schematic_fraction:.2f}, "
             f"behaviors={item.unique_behavior_count}, behavior_archive={item.behavior_archive_size}, "
             f"schema_archive={item.schema_archive_size}, immigrants={item.random_immigrant_count}, "
+            f"schema_instantiations={item.instantiated_schema_products}, "
             f"beam={item.beam_pool_size}, beam_pairs={item.beam_pair_attempts}/{item.beam_pair_budget}, "
             f"beam_valid={item.beam_valid_products}, "
             f"mean_cd={item.mean_cd_steps:.2f}, mean_substantive_cd={item.mean_substantive_cd_steps:.2f}, "

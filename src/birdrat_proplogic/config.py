@@ -74,6 +74,19 @@ class EvolutionConfig:
     beam_max_depth: int = 3
     beam_major_budget: int = 200
     beam_pair_budget: int = 5_000
+    beam_suffix_match_weight: float = 1_500.0
+    beam_consequent_similarity_weight: float = 1_000.0
+    beam_unification_weight: float = 500.0
+    beam_directed_similarity_weight: float = 250.0
+    beam_head_match_weight: float = 100.0
+    beam_antecedent_size_penalty: float = 2.0
+    beam_major_proof_size_penalty: float = 1.0
+    beam_major_cd_step_penalty: float = 5.0
+    beam_major_formula_size_penalty: float = 0.2
+    beam_vacuous_penalty: float = 250.0
+    beam_minor_proof_size_penalty: float = 1.0
+    beam_substitution_size_penalty: float = 0.5
+    beam_closed_minor_bonus: float = 25.0
 
 
 @dataclass(frozen=True)

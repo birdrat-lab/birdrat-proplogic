@@ -57,6 +57,7 @@ class GenerationStats:
     behavior_archive_size: int
     schema_archive_size: int
     random_immigrant_count: int
+    instantiated_schema_products: int
     beam_pool_size: int
     beam_pair_attempts: int
     beam_pair_budget: int
@@ -299,6 +300,7 @@ def _generation_stats(
         behavior_archive_size=len(quality_archives.behavior_archive),
         schema_archive_size=len(quality_archives.schema_archive),
         random_immigrant_count=len(selection.random_immigrants),
+        instantiated_schema_products=len(selection.promoted),
         beam_pool_size=beam_pool_size,
         beam_pair_attempts=beam_diagnostics.pair_attempts,
         beam_pair_budget=beam_diagnostics.pair_budget,
@@ -312,7 +314,9 @@ def _format_beam_layer(layer) -> str:
         f"d{layer.depth}:pool={layer.pair_pool_size},majors={layer.major_candidates},"
         f"compatible={layer.compatible_minor_candidates},attempts={layer.pair_attempts},"
         f"valid={layer.valid_products},closed={layer.closed_products},schematic={layer.schematic_products},"
-        f"closed_keep={layer.closed_survivors},schematic_keep={layer.schematic_survivors}"
+        f"closed_keep={layer.closed_survivors},schematic_keep={layer.schematic_survivors},"
+        f"gen_ax=({layer.generated_ax1_fraction:.2f},{layer.generated_ax2_fraction:.2f},{layer.generated_ax3_fraction:.2f}),"
+        f"keep_ax=({layer.kept_ax1_fraction:.2f},{layer.kept_ax2_fraction:.2f},{layer.kept_ax3_fraction:.2f})"
     )
 
 

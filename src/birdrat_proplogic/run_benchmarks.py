@@ -76,6 +76,7 @@ def render_benchmark_result(benchmark: SearchBenchmark, seed: int | None = None)
         f"beam pair attempts: {diagnostics.pair_attempts}",
         f"beam valid products: {diagnostics.valid_products}",
         f"beam layer counts: {_beam_layer_text(result.history[-1].beam_layer_counts if result.history else ())}",
+        f"schema instantiation products: {result.history[-1].instantiated_schema_products if result.history else 0}",
         f"population size: {benchmark.config.evolution.population_size}",
         f"generations: {len(result.history)}",
         f"notes: {benchmark.notes}",
