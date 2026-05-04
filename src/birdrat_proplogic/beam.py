@@ -13,7 +13,7 @@ from birdrat_proplogic.fitness import (
     total_fitness,
     total_formula_size,
 )
-from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size, is_closed_formula
+from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size, is_closed_formula, pretty
 from birdrat_proplogic.goals import Goal
 from birdrat_proplogic.proof import (
     Ax1,
@@ -40,11 +40,18 @@ class BeamLayerStats:
     major_candidates: int
     compatible_minor_candidates: int
     pair_attempts: int
+    strict_pairs_attempted: int
+    suffix_pairs_attempted: int
+    exploratory_pairs_attempted: int
+    duplicate_pairs_removed: int
     valid_products: int
     closed_products: int
     schematic_products: int
     closed_survivors: int
     schematic_survivors: int
+    suffix_survivors_by_suffix: tuple[tuple[str, int], ...]
+    exact_target_generated_in_beam: bool
+    exact_target_survived_to_population: bool
     generated_ax1_fraction: float
     generated_ax2_fraction: float
     generated_ax3_fraction: float
@@ -68,6 +75,22 @@ class BeamDiagnostics:
 class BeamSearchResult:
     proofs: tuple[Proof, ...]
     diagnostics: BeamDiagnostics
+
+
+@dataclass(frozen=True)
+class PairChannelResult:
+    pairs: tuple[tuple[float, Proof, Proof], ...]
+    compatible_minor_candidates: int
+
+
+@dataclass(frozen=True)
+class PairSelection:
+    pairs: tuple[tuple[float, Proof, Proof], ...]
+    compatible_minor_candidates: int
+    strict_pairs_attempted: int
+    suffix_pairs_attempted: int
+    exploratory_pairs_attempted: int
+    duplicate_pairs_removed: int
 
 
 def cd_beam_search(
@@ -102,7 +125,7 @@ def cd_beam_search_result(
     for depth in range(max_depth):
         pair_pool = tuple(_dedupe(list(seeds) + list(known[-width:]) + list(frontier)))
         new: list[Proof] = []
-        pairs, compatible_count = prioritized_candidate_pairs(
+        pair_selection = candidate_pairs(
             pair_pool,
             target,
             regions,
@@ -110,6 +133,7 @@ def cd_beam_search_result(
             major_budget=major_budget,
             pair_budget=pair_budget,
         )
+        pairs = pair_selection.pairs
 
         for _, major, minor in pairs:
             candidate = try_make_cd(major, minor)
@@ -132,13 +156,14 @@ def cd_beam_search_result(
                 depth,
                 pair_pool,
                 pairs,
-                compatible_count,
                 new,
                 closed,
                 schematic,
                 kept_closed,
                 kept_schematic,
                 major_budget,
+                target,
+                pair_selection,
             )
         )
         if not new:
@@ -167,13 +192,14 @@ def _beam_layer_stats(
     depth: int,
     pair_pool: tuple[Proof, ...],
     pairs: tuple[tuple[float, Proof, Proof], ...],
-    compatible_count: int,
     new: list[Proof],
     closed: tuple[Proof, ...],
     schematic: tuple[Proof, ...],
     kept_closed: tuple[Proof, ...],
     kept_schematic: tuple[Proof, ...],
     major_budget: int,
+    target: Formula,
+    pair_selection: PairSelection,
 ) -> BeamLayerStats:
     kept = kept_closed + kept_schematic
     generated_fractions = axiom_family_fractions(tuple(new))
@@ -182,13 +208,20 @@ def _beam_layer_stats(
         depth=depth,
         pair_pool_size=len(pair_pool),
         major_candidates=min(major_budget, len([proof for proof in pair_pool if implication_major_parts(proof) is not None])),
-        compatible_minor_candidates=compatible_count,
+        compatible_minor_candidates=pair_selection.compatible_minor_candidates,
         pair_attempts=len(pairs),
+        strict_pairs_attempted=pair_selection.strict_pairs_attempted,
+        suffix_pairs_attempted=pair_selection.suffix_pairs_attempted,
+        exploratory_pairs_attempted=pair_selection.exploratory_pairs_attempted,
+        duplicate_pairs_removed=pair_selection.duplicate_pairs_removed,
         valid_products=len(new),
         closed_products=len(closed),
         schematic_products=len(schematic),
         closed_survivors=len(kept_closed),
         schematic_survivors=len(kept_schematic),
+        suffix_survivors_by_suffix=_suffix_survivor_counts(kept_closed, target),
+        exact_target_generated_in_beam=any(conclusion(proof) == target for proof in new),
+        exact_target_survived_to_population=any(conclusion(proof) == target for proof in kept),
         generated_ax1_fraction=generated_fractions[0],
         generated_ax2_fraction=generated_fractions[1],
         generated_ax3_fraction=generated_fractions[2],
@@ -231,14 +264,13 @@ def major_priority_with_config(
         return float("-inf")
     antecedent, consequent = parts
     evolution_config = config.evolution
-    targets = target_and_region_suffixes(target, regions)
+    targets = target_and_regions(target, regions)
     exact = 1.0 if consequent in targets else 0.0
-    suffix_score = suffix_priority(consequent, target, regions)
     unifies = 1.0 if _unifies_with_any(consequent, targets) else 0.0
     head_match = 1.0 if _same_final_head_as_any(consequent, targets) else 0.0
     vacuous = 1.0 if is_vacuous_cd(major) else 0.0
     return (
-        evolution_config.beam_suffix_match_weight * max(exact, suffix_score)
+        evolution_config.beam_suffix_match_weight * max(exact, 0.85 * unifies)
         + evolution_config.beam_consequent_similarity_weight * best_consequent_similarity(consequent, target, regions)
         + evolution_config.beam_unification_weight * unifies
         + evolution_config.beam_directed_similarity_weight * best_directed_similarity(consequent, target, regions)
@@ -282,6 +314,71 @@ def pair_priority_with_config(
     )
 
 
+def candidate_pairs(
+    proof_pool: tuple[Proof, ...],
+    target: Formula,
+    regions: tuple[Goal, ...],
+    config: ProplogicConfig,
+    *,
+    major_budget: int,
+    pair_budget: int,
+) -> PairSelection:
+    budgets = _monotone_channel_budgets(
+        pair_budget,
+        config.evolution.beam_prioritized_fraction,
+        config.evolution.beam_suffix_fraction,
+        config.evolution.beam_exploratory_fraction,
+    )
+    strict_result = prioritized_pairs(
+        proof_pool,
+        target,
+        regions,
+        config,
+        major_budget=major_budget,
+        pair_budget=budgets[0],
+    )
+    strict_keys = _pair_keys(strict_result.pairs)
+    suffix_result = suffix_pairs(
+        proof_pool,
+        target,
+        regions,
+        config,
+        major_budget=major_budget,
+        pair_budget=budgets[1],
+        excluded_pairs=strict_keys,
+    )
+    strict_suffix_keys = strict_keys | _pair_keys(suffix_result.pairs)
+    exploratory_result = exploratory_pairs(
+        proof_pool,
+        target,
+        regions,
+        config,
+        major_budget=major_budget,
+        pair_budget=budgets[2],
+        excluded_pairs=strict_suffix_keys,
+    )
+    selected, duplicates = _dedupe_channel_pairs(
+        (
+            ("strict", strict_result.pairs),
+            ("suffix", suffix_result.pairs),
+            ("exploratory", exploratory_result.pairs),
+        ),
+        {"strict": budgets[0], "suffix": budgets[1], "exploratory": budgets[2]},
+    )
+    return PairSelection(
+        pairs=tuple((priority, major, minor) for _channel, priority, major, minor in selected),
+        compatible_minor_candidates=(
+            strict_result.compatible_minor_candidates
+            + suffix_result.compatible_minor_candidates
+            + exploratory_result.compatible_minor_candidates
+        ),
+        strict_pairs_attempted=sum(1 for channel, _priority, _major, _minor in selected if channel == "strict"),
+        suffix_pairs_attempted=sum(1 for channel, _priority, _major, _minor in selected if channel == "suffix"),
+        exploratory_pairs_attempted=sum(1 for channel, _priority, _major, _minor in selected if channel == "exploratory"),
+        duplicate_pairs_removed=duplicates,
+    )
+
+
 def prioritized_candidate_pairs(
     proof_pool: tuple[Proof, ...],
     target: Formula,
@@ -291,43 +388,18 @@ def prioritized_candidate_pairs(
     major_budget: int,
     pair_budget: int,
 ) -> tuple[tuple[tuple[float, Proof, Proof], ...], int]:
-    budgets = _channel_budgets(
-        pair_budget,
-        config.evolution.beam_prioritized_fraction,
-        config.evolution.beam_suffix_fraction,
-        config.evolution.beam_exploratory_fraction,
-    )
-    strict_pairs, compatible_count = _prioritized_pairs(
+    result = prioritized_pairs(
         proof_pool,
         target,
         regions,
         config,
         major_budget=major_budget,
-        pair_budget=budgets[0],
+        pair_budget=pair_budget,
     )
-    suffix_pairs, suffix_compatible = _suffix_pairs(
-        proof_pool,
-        target,
-        regions,
-        config,
-        major_budget=major_budget,
-        pair_budget=budgets[1],
-    )
-    exploratory_pairs, exploratory_compatible = _exploratory_pairs(
-        proof_pool,
-        target,
-        regions,
-        config,
-        major_budget=major_budget,
-        pair_budget=budgets[2],
-    )
-    return (
-        _dedupe_ranked_pairs(strict_pairs + suffix_pairs + exploratory_pairs, pair_budget),
-        compatible_count + suffix_compatible + exploratory_compatible,
-    )
+    return (result.pairs, result.compatible_minor_candidates)
 
 
-def _prioritized_pairs(
+def prioritized_pairs(
     proof_pool: tuple[Proof, ...],
     target: Formula,
     regions: tuple[Goal, ...],
@@ -335,7 +407,7 @@ def _prioritized_pairs(
     *,
     major_budget: int,
     pair_budget: int,
-) -> tuple[tuple[tuple[float, Proof, Proof], ...], int]:
+) -> PairChannelResult:
     index = build_minor_shape_index(proof_pool)
     majors = sorted(
         (proof for proof in proof_pool if implication_major_parts(proof) is not None),
@@ -359,11 +431,11 @@ def _prioritized_pairs(
 
     ranked = sorted(pairs, key=lambda item: item[0], reverse=True)
     if pair_budget <= 0:
-        return ((), compatible_count)
-    return (tuple(ranked[:pair_budget]), compatible_count)
+        return PairChannelResult((), compatible_count)
+    return PairChannelResult(tuple(ranked[:pair_budget]), compatible_count)
 
 
-def _suffix_pairs(
+def suffix_pairs(
     proof_pool: tuple[Proof, ...],
     target: Formula,
     regions: tuple[Goal, ...],
@@ -371,30 +443,45 @@ def _suffix_pairs(
     *,
     major_budget: int,
     pair_budget: int,
-) -> tuple[tuple[tuple[float, Proof, Proof], ...], int]:
+    excluded_pairs: set[tuple[Proof, Proof]] | None = None,
+) -> PairChannelResult:
     if pair_budget <= 0:
-        return ((), 0)
-    suffixes = target_and_region_suffixes(target, regions)
+        return PairChannelResult((), 0)
+    suffixes = implication_spine_suffixes(target)
     if not suffixes:
-        return ((), 0)
+        return PairChannelResult((), 0)
     per_suffix = max(1, pair_budget // len(suffixes))
     output: list[tuple[float, Proof, Proof]] = []
     compatible_total = 0
+    index = build_minor_shape_index(proof_pool)
+    excluded = excluded_pairs or set()
     for suffix in suffixes:
-        pairs, compatible = _prioritized_pairs(
-            proof_pool,
-            suffix,
-            (),
-            config,
-            major_budget=major_budget,
-            pair_budget=per_suffix,
+        majors = sorted(
+            (proof for proof in proof_pool if implication_major_parts(proof) is not None),
+            key=lambda proof: suffix_major_priority(proof, suffix, config),
+            reverse=True,
+        )[:major_budget]
+        suffix_output: list[tuple[float, Proof, Proof]] = []
+        for major in majors:
+            parts = implication_major_parts(major)
+            if parts is None:
+                continue
+            antecedent, _ = parts
+            minors = tuple(compatible_minor_candidates(antecedent, proof_pool, index))
+            compatible_total += len(minors)
+            for minor in minors:
+                if (major, minor) in excluded:
+                    continue
+                priority = suffix_pair_priority(major, minor, suffix, config)
+                if isfinite(priority):
+                    suffix_output.append((priority, major, minor))
+        output.extend(
+            sorted(suffix_output, key=lambda item: item[0], reverse=True)[:per_suffix]
         )
-        compatible_total += compatible
-        output.extend(pairs)
-    return (_dedupe_ranked_pairs(tuple(output), pair_budget), compatible_total)
+    return PairChannelResult(_dedupe_ranked_pairs(tuple(output), pair_budget), compatible_total)
 
 
-def _exploratory_pairs(
+def exploratory_pairs(
     proof_pool: tuple[Proof, ...],
     target: Formula,
     regions: tuple[Goal, ...],
@@ -402,9 +489,10 @@ def _exploratory_pairs(
     *,
     major_budget: int,
     pair_budget: int,
-) -> tuple[tuple[tuple[float, Proof, Proof], ...], int]:
+    excluded_pairs: set[tuple[Proof, Proof]] | None = None,
+) -> PairChannelResult:
     if pair_budget <= 0:
-        return ((), 0)
+        return PairChannelResult((), 0)
     index = build_minor_shape_index(proof_pool)
     majors = sorted(
         (proof for proof in proof_pool if implication_major_parts(proof) is not None),
@@ -412,6 +500,7 @@ def _exploratory_pairs(
     )[:major_budget]
     pairs: list[tuple[float, Proof, Proof]] = []
     compatible_count = 0
+    excluded = excluded_pairs or set()
     for major in majors:
         parts = implication_major_parts(major)
         if parts is None:
@@ -420,11 +509,61 @@ def _exploratory_pairs(
         minors = tuple(compatible_minor_candidates(antecedent, proof_pool, index))
         compatible_count += len(minors)
         for minor in minors:
+            if (major, minor) in excluded:
+                continue
             priority = exploratory_pair_priority(major, minor, config)
             if not isfinite(priority):
                 continue
             pairs.append((priority, major, minor))
-    return (_dedupe_ranked_pairs(tuple(pairs), pair_budget), compatible_count)
+    return PairChannelResult(_dedupe_ranked_pairs(tuple(pairs), pair_budget), compatible_count)
+
+
+def suffix_major_priority(major: Proof, suffix: Formula, config: ProplogicConfig) -> float:
+    parts = implication_major_parts(major)
+    if parts is None:
+        return float("-inf")
+    antecedent, consequent = parts
+    evolution_config = config.evolution
+    exact = 1.0 if consequent == suffix else 0.0
+    unifies = 1.0 if not isinstance(unify(consequent, suffix), UnifyFailure) else 0.0
+    head_match = 1.0 if _same_final_head_as_any(consequent, (suffix,)) else 0.0
+    vacuous = 1.0 if is_vacuous_cd(major) else 0.0
+    return (
+        evolution_config.beam_suffix_match_weight * max(exact, 0.85 * unifies)
+        + evolution_config.beam_consequent_similarity_weight * best_directed_similarity(consequent, suffix, ())
+        + evolution_config.beam_head_match_weight * head_match
+        - evolution_config.beam_antecedent_size_penalty * formula_size(antecedent)
+        - evolution_config.beam_major_proof_size_penalty * proof_size(major)
+        - evolution_config.beam_major_cd_step_penalty * cd_steps(major)
+        - evolution_config.beam_major_formula_size_penalty * total_formula_size(major)
+        - evolution_config.beam_vacuous_penalty * vacuous
+    )
+
+
+def suffix_pair_priority(
+    major: Proof,
+    minor: Proof,
+    suffix: Formula,
+    config: ProplogicConfig,
+) -> float:
+    parts = implication_major_parts(major)
+    if parts is None:
+        return float("-inf")
+    antecedent, _ = parts
+    minor_conclusion = conclusion(minor)
+    if isinstance(minor_conclusion, Invalid):
+        return float("-inf")
+    subst = unify(antecedent, minor_conclusion)
+    if isinstance(subst, UnifyFailure):
+        return float("-inf")
+    evolution_config = config.evolution
+    closed_minor_bonus = evolution_config.beam_closed_minor_bonus if is_closed_formula(minor_conclusion) else 0.0
+    return (
+        suffix_major_priority(major, suffix, config)
+        - evolution_config.beam_minor_proof_size_penalty * proof_size(minor)
+        - evolution_config.beam_substitution_size_penalty * substitution_size(subst)
+        + closed_minor_bonus
+    )
 
 
 def exploratory_pair_priority(major: Proof, minor: Proof, config: ProplogicConfig) -> float:
@@ -448,7 +587,7 @@ def exploratory_pair_priority(major: Proof, minor: Proof, config: ProplogicConfi
     )
 
 
-def _channel_budgets(
+def _monotone_channel_budgets(
     total: int,
     prioritized_fraction: float,
     suffix_fraction: float,
@@ -456,16 +595,38 @@ def _channel_budgets(
 ) -> tuple[int, int, int]:
     if total <= 0:
         return (0, 0, 0)
-    fractions = [max(0.0, prioritized_fraction), max(0.0, suffix_fraction), max(0.0, exploratory_fraction)]
-    fraction_sum = sum(fractions)
-    if fraction_sum <= 0:
-        fractions = [1.0, 0.0, 0.0]
-        fraction_sum = 1.0
-    fractions = [item / fraction_sum for item in fractions]
-    prioritized = int(total * fractions[0])
-    suffix = int(total * fractions[1])
-    exploratory = total - prioritized - suffix
+    prioritized = int(total * max(0.0, prioritized_fraction))
+    suffix = int(total * max(0.0, suffix_fraction))
+    exploratory = int(total * max(0.0, exploratory_fraction))
+    if prioritized <= 0 and suffix <= 0 and exploratory <= 0:
+        prioritized = total
     return (prioritized, suffix, exploratory)
+
+
+def _dedupe_channel_pairs(
+    channel_pairs: tuple[tuple[str, tuple[tuple[float, Proof, Proof], ...]], ...],
+    channel_limits: dict[str, int],
+) -> tuple[tuple[tuple[str, float, Proof, Proof], ...], int]:
+    selected: list[tuple[str, float, Proof, Proof]] = []
+    seen: set[tuple[Proof, Proof]] = set()
+    duplicate_count = 0
+    channel_counts = {channel: 0 for channel in channel_limits}
+    for channel, pairs in channel_pairs:
+        for priority, major, minor in pairs:
+            if channel_counts.get(channel, 0) >= channel_limits.get(channel, 0):
+                break
+            key = (major, minor)
+            if key in seen:
+                duplicate_count += 1
+                continue
+            selected.append((channel, priority, major, minor))
+            seen.add(key)
+            channel_counts[channel] = channel_counts.get(channel, 0) + 1
+    return (tuple(selected), duplicate_count)
+
+
+def _pair_keys(pairs: tuple[tuple[float, Proof, Proof], ...]) -> set[tuple[Proof, Proof]]:
+    return {(major, minor) for _priority, major, minor in pairs}
 
 
 def _dedupe_ranked_pairs(
@@ -545,6 +706,18 @@ def target_and_region_suffixes(target: Formula, regions: tuple[Goal, ...]) -> tu
     return tuple(suffixes)
 
 
+def target_and_regions(target: Formula, regions: tuple[Goal, ...]) -> tuple[Formula, ...]:
+    targets: list[Formula] = [target]
+    seen: set[Formula] = {target}
+    for region in regions:
+        formula = region.core_theorem()
+        if formula in seen:
+            continue
+        seen.add(formula)
+        targets.append(formula)
+    return tuple(targets)
+
+
 def suffix_priority(candidate: Formula, target: Formula, regions: tuple[Goal, ...]) -> float:
     suffixes = target_and_region_suffixes(target, regions)
     if candidate in suffixes:
@@ -604,16 +777,32 @@ def _rank_closed(
     config: ProplogicConfig,
     width: int,
 ) -> tuple[Proof, ...]:
-    return tuple(
-        sorted(
-            proofs,
-            key=lambda proof: (
-                total_fitness(proof, target, regions, config).score,
-                -cd_depth(proof),
-            ),
-            reverse=True,
-        )[:width]
+    ranked = sorted(
+        proofs,
+        key=lambda proof: (
+            total_fitness(proof, target, regions, config).score,
+            -cd_depth(proof),
+        ),
+        reverse=True,
     )
+    selected: list[Proof] = []
+    for suffix in implication_spine_suffixes(target):
+        suffix_candidates = [
+            proof
+            for proof in ranked
+            if proof not in selected and _matches_or_unifies(conclusion(proof), suffix)
+        ]
+        if suffix_candidates:
+            selected.append(suffix_candidates[0])
+        if len(selected) >= width:
+            return tuple(selected)
+    for proof in ranked:
+        if proof in selected:
+            continue
+        selected.append(proof)
+        if len(selected) >= width:
+            break
+    return tuple(selected)
 
 
 def _rank_schematic(
@@ -693,6 +882,22 @@ def _is_schematic_or_meta_compatible(formula: Formula | Invalid) -> bool:
 
 def _unifies_with_any(formula: Formula, targets: tuple[Formula, ...]) -> bool:
     return any(not isinstance(unify(formula, target), UnifyFailure) for target in targets)
+
+
+def _matches_or_unifies(formula: Formula | Invalid, target: Formula) -> bool:
+    if isinstance(formula, Invalid):
+        return False
+    return formula == target or not isinstance(unify(formula, target), UnifyFailure)
+
+
+def _suffix_survivor_counts(proofs: tuple[Proof, ...], target: Formula) -> tuple[tuple[str, int], ...]:
+    return tuple(
+        (
+            pretty(suffix),
+            sum(1 for proof in proofs if _matches_or_unifies(conclusion(proof), suffix)),
+        )
+        for suffix in implication_spine_suffixes(target)
+    )
 
 
 def _same_final_head_as_any(formula: Formula, targets: tuple[Formula, ...]) -> bool:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 
-from birdrat_proplogic.benchmarks import SearchBenchmark, small_target_benchmarks
+from birdrat_proplogic.benchmarks import SearchBenchmark, regression_benchmarks, small_target_benchmarks
 from birdrat_proplogic.fitness import total_fitness
 from birdrat_proplogic.formula import is_closed_formula, pretty
 from birdrat_proplogic.proof import Invalid
@@ -14,7 +14,7 @@ from birdrat_proplogic.surface import desugar, surface_pretty
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m birdrat_proplogic.run_benchmarks")
-    parser.add_argument("--small-targets", action="store_true", help="run the five small target-only benchmarks")
+    parser.add_argument("--small-targets", action="store_true", help="run all five small target-only benchmarks")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--max-generations", type=int)
     parser.add_argument("--population-size", type=int)
@@ -29,10 +29,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    if not args.small_targets:
-        parser.error("choose a benchmark suite, e.g. --small-targets")
 
-    benchmarks = tuple(_override_config(benchmark, args) for benchmark in small_target_benchmarks())
+    suite = small_target_benchmarks() if args.small_targets else regression_benchmarks()
+    benchmarks = tuple(_override_config(benchmark, args) for benchmark in suite)
     for index, benchmark in enumerate(benchmarks):
         if index:
             print()
@@ -188,10 +187,21 @@ def _raw_beam_layer_text(layers: tuple) -> str:
     return " | ".join(
         (
             f"d{layer.depth}:attempts={layer.pair_attempts},valid={layer.valid_products},"
-            f"closed={layer.closed_products},schematic={layer.schematic_products}"
+            f"strict={layer.strict_pairs_attempted},suffix={layer.suffix_pairs_attempted},"
+            f"explore={layer.exploratory_pairs_attempted},dupes={layer.duplicate_pairs_removed},"
+            f"closed={layer.closed_products},schematic={layer.schematic_products},"
+            f"exact_generated={layer.exact_target_generated_in_beam},"
+            f"exact_survived={layer.exact_target_survived_to_population},"
+            f"suffix_survivors={_suffix_survivor_text(layer.suffix_survivors_by_suffix)}"
         )
         for layer in layers
     )
+
+
+def _suffix_survivor_text(items: tuple[tuple[str, int], ...]) -> str:
+    if not items:
+        return "none"
+    return "[" + ", ".join(f"{suffix}:{count}" for suffix, count in items) + "]"
 
 
 if __name__ == "__main__":

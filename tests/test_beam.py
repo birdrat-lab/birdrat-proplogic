@@ -1,10 +1,15 @@
 from birdrat_proplogic.beam import (
+    candidate_pairs,
     cd_beam_search,
     cd_beam_search_result,
+    exploratory_pairs,
     implication_major_parts,
     implication_spine_suffixes,
     pair_priority,
     prioritized_candidate_pairs,
+    prioritized_pairs,
+    seeded_axiom_instances,
+    suffix_pairs,
     suffix_priority,
 )
 from birdrat_proplogic.config import ArchiveConfig, EvolutionConfig, ProplogicConfig
@@ -12,6 +17,7 @@ from birdrat_proplogic.dproof import proves_identity_up_to_renaming
 from birdrat_proplogic.evolution import evolve
 from birdrat_proplogic.formula import Atom, Imp, Meta
 from birdrat_proplogic.proof import Ax1, Ax2
+from birdrat_proplogic.seed import formula_pool_from_target
 from birdrat_proplogic.surface import SAtom, SImp
 
 
@@ -117,3 +123,52 @@ def test_prioritized_candidate_pairs_filters_to_budgeted_unifiable_pairs() -> No
 
     assert compatible > 0
     assert 0 < len(pairs) <= 2
+
+
+def test_hybrid_candidate_pairs_add_non_strict_channels() -> None:
+    p = Atom("p")
+    q = Atom("q")
+    r = Atom("r")
+    target = Imp(Imp(p, q), Imp(Imp(r, p), Imp(r, q)))
+    formula_pool = formula_pool_from_target(target, ())
+    pool = seeded_axiom_instances(formula_pool, 40)
+    config = ProplogicConfig(
+        archive=ArchiveConfig(path=None),
+        evolution=EvolutionConfig(
+            beam_width=40,
+            beam_pair_budget=100,
+            beam_prioritized_fraction=1.0,
+            beam_suffix_fraction=0.20,
+            beam_exploratory_fraction=0.10,
+        ),
+    )
+
+    selection = candidate_pairs(
+        pool,
+        target,
+        (),
+        config,
+        major_budget=200,
+        pair_budget=100,
+    )
+
+    assert selection.strict_pairs_attempted == 100
+    assert selection.suffix_pairs_attempted > 0
+    assert selection.exploratory_pairs_attempted > 0
+    assert len(selection.pairs) > selection.strict_pairs_attempted
+
+
+def test_pair_channels_are_separate_entry_points() -> None:
+    p = Atom("p")
+    q = Atom("q")
+    target = Imp(p, p)
+    pool = (Ax2(Meta("?p"), Meta("?q"), Meta("?r")), Ax1(p, q), Ax1(q, p))
+    config = ProplogicConfig(archive=ArchiveConfig(path=None))
+
+    strict = prioritized_pairs(pool, target, (), config, major_budget=3, pair_budget=2)
+    suffix = suffix_pairs(pool, target, (), config, major_budget=3, pair_budget=2)
+    exploratory = exploratory_pairs(pool, target, (), config, major_budget=3, pair_budget=2)
+
+    assert len(strict.pairs) <= 2
+    assert len(suffix.pairs) <= 2
+    assert len(exploratory.pairs) <= 2

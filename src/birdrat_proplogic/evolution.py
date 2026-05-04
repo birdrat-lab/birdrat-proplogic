@@ -313,8 +313,12 @@ def _format_beam_layer(layer) -> str:
     return (
         f"d{layer.depth}:pool={layer.pair_pool_size},majors={layer.major_candidates},"
         f"compatible={layer.compatible_minor_candidates},attempts={layer.pair_attempts},"
+        f"strict={layer.strict_pairs_attempted},suffix={layer.suffix_pairs_attempted},"
+        f"explore={layer.exploratory_pairs_attempted},dupes={layer.duplicate_pairs_removed},"
         f"valid={layer.valid_products},closed={layer.closed_products},schematic={layer.schematic_products},"
         f"closed_keep={layer.closed_survivors},schematic_keep={layer.schematic_survivors},"
+        f"exact_generated={layer.exact_target_generated_in_beam},"
+        f"exact_survived={layer.exact_target_survived_to_population},"
         f"gen_ax=({layer.generated_ax1_fraction:.2f},{layer.generated_ax2_fraction:.2f},{layer.generated_ax3_fraction:.2f}),"
         f"keep_ax=({layer.kept_ax1_fraction:.2f},{layer.kept_ax2_fraction:.2f},{layer.kept_ax3_fraction:.2f})"
     )
