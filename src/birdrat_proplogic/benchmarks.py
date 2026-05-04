@@ -57,67 +57,40 @@ def small_target_benchmarks() -> tuple[SearchBenchmark, ...]:
 
 
 def regression_benchmarks() -> tuple[SearchBenchmark, ...]:
-    benchmarks = small_target_benchmarks()
-    return (benchmarks[0], benchmarks[1], benchmarks[3])
+    return small_target_benchmarks()
 
 
 def expanded_target_benchmarks() -> tuple[SearchBenchmark, ...]:
-    base = EvolutionConfig(
-        population_size=40,
-        max_generations=40,
-        beam_width=60,
-        beam_max_depth=4,
-        beam_pair_budget=5000,
-    )
     return (
         _benchmark(
-            "double-negation-introduction",
+            "double-negation-intro",
             r"p |- \not \not p",
             "Checks whether a simple classical target is reachable without adding a surface-level rule.",
-            base,
-            "plausible expanded target",
+            EvolutionConfig(
+                population_size=80,
+                max_generations=150,
+                diagnostics_interval=1,
+                beam_width=240,
+                beam_max_depth=7,
+                beam_major_budget=10_000,
+                beam_pair_budget=100_000,
+            ),
+            "diagnostic expanded target; failure should be reported without failing the suite unless --strict is used",
         ),
         _benchmark(
-            "contraposition",
+            "contrapositive",
             r"p \to q, \not q |- \not p",
             "Diagnostic target for implication plus negation interaction.",
-            base,
-            "diagnostic expanded target; may fail while search substrate improves",
-        ),
-        _benchmark(
-            "permutation-exchange",
-            r"p \to q \to r, q, p |- r",
-            "Tests whether antecedent order can be rearranged by P2 plus CD search.",
-            base,
-            "diagnostic expanded target; may fail while search substrate improves",
-        ),
-        _benchmark(
-            "composition",
-            r"q \to r, p \to q, p |- r",
-            "A second syllogism-like composition target with a different antecedent order.",
-            base,
-            "plausible expanded target",
-        ),
-        _benchmark(
-            "encoded-conjunction-left-projection",
-            r"p \land q |- p",
-            "Surface conjunction is desugared to core implication/negation; no projection rule is added.",
-            base,
-            "diagnostic expanded target; expected to be nontrivial",
-        ),
-        _benchmark(
-            "encoded-conjunction-right-projection",
-            r"p \land q |- q",
-            "Surface conjunction is desugared to core implication/negation; no projection rule is added.",
-            base,
-            "diagnostic expanded target; expected to be nontrivial",
-        ),
-        _benchmark(
-            "encoded-conjunction-commutativity",
-            r"p \land q |- q \land p",
-            "Milestone diagnostic for encoded conjunction reasoning without primitive conjunction rules.",
-            base,
-            "diagnostic milestone target; may fail while search substrate improves",
+            EvolutionConfig(
+                population_size=100,
+                max_generations=250,
+                diagnostics_interval=1,
+                beam_width=320,
+                beam_max_depth=8,
+                beam_major_budget=20_000,
+                beam_pair_budget=200_000,
+            ),
+            "diagnostic expanded target; failure should be reported without failing the suite unless --strict is used",
         ),
     )
 

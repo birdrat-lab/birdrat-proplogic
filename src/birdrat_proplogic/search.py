@@ -110,17 +110,35 @@ def make_default_search_phases(base_config: ProplogicConfig) -> tuple[SearchPhas
     )
 
 
+def make_exhaustive_search_phases(base_config: ProplogicConfig) -> tuple[SearchPhase, ...]:
+    evolution = base_config.evolution
+    return (
+        SearchPhase(
+            name="exhaustive-beam",
+            beam_width=evolution.beam_width,
+            beam_max_depth=evolution.beam_max_depth,
+            beam_pair_budget=evolution.beam_pair_budget,
+            prioritized_fraction=0.0,
+            suffix_fraction=0.0,
+            exploratory_fraction=1.0,
+            population_size=evolution.population_size,
+            generations=evolution.max_generations,
+        ),
+    )
+
+
 def search_with_fallback(
     target: SurfaceFormula,
     config: ProplogicConfig,
     seed: int | None = None,
     progress_callback: Callable[[str, GenerationStats, float], None] | None = None,
     profiler: RuntimeProfiler | None = None,
+    phases: tuple[SearchPhase, ...] | None = None,
 ) -> SearchResult:
     started = perf_counter()
     profiler = profiler or RuntimeProfiler(enabled=False)
     reports: list[PhaseReport] = []
-    for index, phase in enumerate(make_default_search_phases(config)):
+    for index, phase in enumerate(phases or make_default_search_phases(config)):
         phase_seed = None if seed is None else seed + index * 1_000_003
         phase_config = _config_for_phase(config, phase)
         phase_started = perf_counter()
@@ -152,12 +170,13 @@ def search_beam_only(
     config: ProplogicConfig,
     seed: int | None = None,
     profiler: RuntimeProfiler | None = None,
+    phases: tuple[SearchPhase, ...] | None = None,
 ) -> SearchResult:
     del seed
     started = perf_counter()
     profiler = profiler or RuntimeProfiler(enabled=False)
     reports: list[PhaseReport] = []
-    for phase in make_default_search_phases(config):
+    for phase in phases or make_default_search_phases(config):
         phase_config = _config_for_phase(config, phase)
         phase_started = perf_counter()
         result = _beam_only_phase_result(target, phase_config, profiler)

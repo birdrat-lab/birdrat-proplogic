@@ -16,7 +16,7 @@ from birdrat_proplogic.proof import proof_pretty
 from birdrat_proplogic.profiling import RuntimeProfile, RuntimeProfiler, compact_runtime_summary
 from birdrat_proplogic.quality import behavior_descriptor, novelty_score
 from birdrat_proplogic.reporting import timestamp, write_report
-from birdrat_proplogic.search import PhaseReport, search_beam_only, search_with_fallback
+from birdrat_proplogic.search import PhaseReport, make_exhaustive_search_phases, search_beam_only, search_with_fallback
 from birdrat_proplogic.surface import desugar, surface_display, surface_pretty, surface_sequent_pretty
 
 
@@ -36,7 +36,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-beam", action="store_true", help="disable beam seeding and run evolution only")
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument("--strict", action="store_true", help="return a failing exit code if any selected benchmark is not solved")
-    parser.add_argument("--progress-interval", type=int, default=10)
+    parser.add_argument("--progress-interval", type=int)
     parser.add_argument("--report-dir", default="reports/benchmarks")
     parser.add_argument("--report-format", choices=("json", "md", "both"), default="json")
     parser.add_argument("--no-report", action="store_true")
@@ -54,33 +54,44 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--beam-only and --no-beam are mutually exclusive")
     suite_name, suite = _selected_suite(args)
     benchmarks = tuple(_override_config(benchmark, args) for benchmark in suite)
+    progress_interval = args.progress_interval or (1 if suite_name == "expanded-targets" else 10)
     results = []
     for index, benchmark in enumerate(benchmarks):
         if not args.quiet:
             if index:
-                print()
-                print()
-            print(f"[{index + 1}/{len(benchmarks)}] {benchmark.name}")
-            print("  proving:")
+                print(flush=True)
+                print(flush=True)
+            print(f"[{index + 1}/{len(benchmarks)}] {benchmark.name}", flush=True)
+            print("  proving:", flush=True)
             for line in surface_display(benchmark.target).splitlines():
-                print(f"    {line}")
-            print(f"  core: {pretty(desugar(benchmark.target))}")
+                print(f"    {line}", flush=True)
+            print(f"  core: {pretty(desugar(benchmark.target))}", flush=True)
         profiler = RuntimeProfiler(enabled=True)
+        phases = _search_phases_for_benchmark(suite_name, benchmark)
+        if not args.quiet and suite_name == "expanded-targets":
+            print(_expanded_start_line(benchmark), flush=True)
         if args.beam_only:
-            search = search_beam_only(benchmark.target, benchmark.config, seed=args.seed, profiler=profiler)
+            search = search_beam_only(benchmark.target, benchmark.config, seed=args.seed, profiler=profiler, phases=phases)
         else:
             search = search_with_fallback(
                 benchmark.target,
                 benchmark.config,
                 seed=args.seed,
                 profiler=profiler,
-                progress_callback=_benchmark_progress_printer(args.progress_interval, args.quiet),
+                progress_callback=_benchmark_progress_printer(
+                    progress_interval,
+                    args.quiet,
+                    total_generations=benchmark.config.evolution.max_generations
+                    if suite_name == "expanded-targets"
+                    else None,
+                ),
+                phases=phases,
             )
         results.append((benchmark, search))
         if args.verbose:
-            print(render_benchmark_search_result(benchmark, search))
+            print(render_benchmark_search_result(benchmark, search), flush=True)
         elif not args.quiet:
-            print(f"  {_benchmark_status_line(search)}")
+            print(f"  {_benchmark_status_line(search)}", flush=True)
     if not args.quiet:
         print()
         print(_summary_table(results))
@@ -105,6 +116,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.strict and any(not search.found for _benchmark, search in results):
         return 1
     return 0
+
+
+def _search_phases_for_benchmark(suite_name: str, benchmark: SearchBenchmark):
+    if suite_name == "expanded-targets":
+        return make_exhaustive_search_phases(benchmark.config)
+    return None
+
+
+def _expanded_start_line(benchmark: SearchBenchmark) -> str:
+    evolution = benchmark.config.evolution
+    return (
+        f"  gen 0/{evolution.max_generations}: exhaustive-beam starting "
+        f"width={evolution.beam_width} depth={evolution.beam_max_depth} "
+        f"major_budget={evolution.beam_major_budget} pair_budget={evolution.beam_pair_budget}"
+    )
 
 
 def _selected_suite(args: argparse.Namespace) -> tuple[str, tuple[SearchBenchmark, ...]]:
@@ -179,13 +205,16 @@ def _benchmark_status_line(search) -> str:
             f"{search.solved_in_phase}: FOUND by={provenance} gen={generation} beam_layer={layer} cd={best.cd_steps} "
             f"depth={best.cd_depth} size={best.proof_size} time={search.total_runtime_seconds:.1f}s"
         )
+    best_closed = _candidate_summary_from_proof(search.best_closed_candidate, search)
+    best_schematic = _candidate_summary_from_proof(search.best_schematic_candidate, search)
     return (
         f"not found phase=none best_sim={best.target_similarity:.2f} "
+        f"best_closed={best_closed} best_schematic={best_schematic} "
         f"time={search.total_runtime_seconds:.1f}s"
     )
 
 
-def _benchmark_progress_printer(interval: int, quiet: bool):
+def _benchmark_progress_printer(interval: int, quiet: bool, total_generations: int | None = None):
     interval = max(1, interval)
     printed: set[tuple[str, int]] = set()
 
@@ -196,21 +225,30 @@ def _benchmark_progress_printer(interval: int, quiet: bool):
         if not should_print or (phase, stats.generation) in printed:
             return
         printed.add((phase, stats.generation))
+        generation = _generation_progress_label(stats.generation, total_generations)
         if stats.best_exact:
             print(
-                f"  gen {stats.generation}: {phase} FOUND "
+                f"  gen {generation}: {phase} FOUND "
                 f"best={stats.best_score:.1f} sim={stats.best_target_similarity:.2f} "
-                f"exact={stats.exact_target_count} beam={stats.beam_valid_products} time={elapsed:.1f}s"
+                f"exact={stats.exact_target_count} beam={stats.beam_valid_products} time={elapsed:.1f}s",
+                flush=True,
             )
             return
         print(
-            f"  gen {stats.generation}: {phase} "
+            f"  gen {generation}: {phase} "
             f"best={stats.best_score:.1f} sim={stats.best_target_similarity:.2f} "
             f"exact={stats.exact_target_count} valid={stats.valid_fraction:.2f} "
-            f"closed={stats.closed_fraction:.2f} beam={stats.beam_valid_products} time={elapsed:.1f}s"
+            f"closed={stats.closed_fraction:.2f} beam={stats.beam_valid_products} time={elapsed:.1f}s",
+            flush=True,
         )
 
     return callback
+
+
+def _generation_progress_label(generation: int, total_generations: int | None) -> str:
+    if total_generations is None:
+        return str(generation)
+    return f"{generation}/{total_generations}"
 
 
 def _summary_table(results) -> str:
@@ -232,6 +270,8 @@ def _summary_table(results) -> str:
         )
         if not search.found:
             lines.append(f"  best similarity: {best.target_similarity:.3f}")
+            lines.append(f"  best closed candidate: {_candidate_summary_from_proof(search.best_closed_candidate, search)}")
+            lines.append(f"  best schematic candidate: {_candidate_summary_from_proof(search.best_schematic_candidate, search)}")
     return "\n".join(lines)
 
 
@@ -357,6 +397,13 @@ def _candidate_text(fitness) -> str:
     else:
         conclusion = pretty(fitness.conclusion)
     return f"{conclusion} (score={fitness.score:.3f}, target_similarity={fitness.target_similarity:.3f})"
+
+
+def _candidate_summary_from_proof(proof, search) -> str:
+    if proof is None:
+        return "none"
+    fitness = total_fitness(proof, desugar(search.result.target), search.result.regions)
+    return _candidate_text(fitness)
 
 
 def _beam_layer_text(layers: tuple[str, ...]) -> str:
