@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from pathlib import Path
 
 from birdrat_proplogic.benchmarks import (
     SearchBenchmark,
@@ -11,6 +12,7 @@ from birdrat_proplogic.benchmarks import (
 )
 from birdrat_proplogic.fitness import total_fitness
 from birdrat_proplogic.formula import is_closed_formula, pretty
+from birdrat_proplogic.lean_export import LeanCheckResult, LeanTheoremSpec, check_lean_file, export_lean_suite, write_lean_file
 from birdrat_proplogic.proof import Invalid
 from birdrat_proplogic.proof import proof_pretty
 from birdrat_proplogic.profiling import RuntimeProfile, RuntimeProfiler, compact_runtime_summary
@@ -36,6 +38,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-beam", action="store_true", help="disable beam seeding and run evolution only")
     parser.add_argument("--beam-progress-interval", type=float, default=5.0)
     parser.add_argument("--no-beam-stop-on-exact", action="store_true")
+    parser.add_argument("--export-lean", action="store_true")
+    parser.add_argument("--lean-output", default="OUTPUT.lean")
+    parser.add_argument("--no-lean-check", action="store_true")
+    parser.add_argument("--lean-command", default="lean")
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument("--strict", action="store_true", help="return a failing exit code if any selected benchmark is not solved")
     parser.add_argument("--progress-interval", type=int)
@@ -116,12 +122,33 @@ def main(argv: list[str] | None = None) -> int:
                 print()
                 print("runtime summary:")
                 print("\n".join(profile_lines))
+    lean_export_path = None
+    lean_check_result = None
+    lean_theorems_exported = 0
+    lean_theorems_skipped: tuple[str, ...] = ()
+    if args.export_lean:
+        lean_export_path, lean_check_result, lean_theorems_exported, lean_theorems_skipped = _export_benchmark_lean(
+            suite_name,
+            results,
+            Path(args.lean_output),
+            no_check=args.no_lean_check,
+            lean_command=args.lean_command,
+            quiet=args.quiet,
+        )
     report_paths = ()
     if not args.no_report:
         profiler = RuntimeProfiler(enabled=True)
         with profiler.section("report_writing"):
             report_paths = write_report(
-                _benchmark_report_payload(suite_name, results, args.seed),
+                _benchmark_report_payload(
+                    suite_name,
+                    results,
+                    args.seed,
+                    lean_export_path=lean_export_path,
+                    lean_check_result=lean_check_result,
+                    lean_theorems_exported=lean_theorems_exported,
+                    lean_theorems_skipped=lean_theorems_skipped,
+                ),
                 report_dir=args.report_dir,
                 stem=f"{suite_name}-{timestamp()}",
                 report_format=args.report_format,
@@ -130,7 +157,61 @@ def main(argv: list[str] | None = None) -> int:
             print(f"full report: {', '.join(str(path) for path in report_paths)}")
     if args.strict and any(not search.found for _benchmark, search in results):
         return 1
+    if args.export_lean and suite_name == "small-targets" and (lean_theorems_exported != len(results) or (lean_check_result is not None and lean_check_result.returncode not in (None, 0))):
+        return 1
     return 0
+
+
+def _export_benchmark_lean(
+    suite_name: str,
+    results,
+    output_path: Path,
+    *,
+    no_check: bool,
+    lean_command: str,
+    quiet: bool,
+) -> tuple[Path | None, LeanCheckResult | None, int, tuple[str, ...]]:
+    if suite_name != "small-targets":
+        if not quiet:
+            print("lean: skipped, benchmark Lean export is currently supported for --small-targets")
+        return (None, None, 0, tuple(benchmark.name for benchmark, _search in results))
+    failed = tuple(benchmark.name for benchmark, search in results if not search.found or search.proof is None)
+    if failed:
+        if not quiet:
+            print(f"lean: skipped, missing proofs for {', '.join(failed)}")
+        return (None, None, 0, failed)
+    specs = tuple(
+        LeanTheoremSpec(
+            theorem_name=benchmark.name.replace("-", "_"),
+            target=desugar(benchmark.target),
+            proof=search.proof,
+            surface_target=surface_pretty(benchmark.target),
+            found_by=search.found_by,
+            found_phase=search.solved_in_phase,
+        )
+        for benchmark, search in results
+        if search.proof is not None
+    )
+    export = export_lean_suite(specs, output_path=output_path, suite_name=suite_name)
+    write_lean_file(export)
+    if not quiet:
+        print("lean:")
+        print(f"  wrote: {output_path}")
+    if no_check:
+        check_result = LeanCheckResult(False, None, None, "", "", skipped_reason="disabled by --no-lean-check")
+    else:
+        check_result = check_lean_file(output_path, lean_command=lean_command)
+    if not quiet:
+        if check_result.checked:
+            print("  checked: yes")
+        elif check_result.skipped_reason:
+            print(f"  checked: skipped ({check_result.skipped_reason})")
+        else:
+            print("  checked: no")
+            if check_result.stderr:
+                print(check_result.stderr.strip())
+        print(f"  theorems: {len(specs)}/{len(results)}")
+    return (output_path, check_result, len(specs), ())
 
 
 def _search_phases_for_benchmark(suite_name: str, benchmark: SearchBenchmark):
@@ -306,7 +387,16 @@ def _summary_table(results) -> str:
     return "\n".join(lines)
 
 
-def _benchmark_report_payload(suite_name: str, results, seed: int | None) -> dict:
+def _benchmark_report_payload(
+    suite_name: str,
+    results,
+    seed: int | None,
+    *,
+    lean_export_path: Path | None = None,
+    lean_check_result: LeanCheckResult | None = None,
+    lean_theorems_exported: int = 0,
+    lean_theorems_skipped: tuple[str, ...] = (),
+) -> dict:
     return {
         "title": f"birdrat-proplogic benchmark: {suite_name}",
         "summary": [
@@ -322,6 +412,13 @@ def _benchmark_report_payload(suite_name: str, results, seed: int | None) -> dic
                 "cd_depth": search.result.best.fitness.cd_depth,
                 "proof_size": search.result.best.fitness.proof_size,
                 "target_similarity": search.result.best.fitness.target_similarity,
+                "lean_export_path": lean_export_path,
+                "lean_checked": lean_check_result.checked if lean_check_result else None,
+                "lean_check_command": lean_check_result.command if lean_check_result else None,
+                "lean_check_stdout": lean_check_result.stdout if lean_check_result else None,
+                "lean_check_stderr": lean_check_result.stderr if lean_check_result else None,
+                "lean_theorems_exported": lean_theorems_exported,
+                "lean_theorems_skipped": lean_theorems_skipped,
             }
             for benchmark, search in results
         ],
@@ -345,6 +442,13 @@ def _benchmark_report_payload(suite_name: str, results, seed: int | None) -> dic
             }
             for benchmark, search in results
         ],
+        "lean_export_path": lean_export_path,
+        "lean_checked": lean_check_result.checked if lean_check_result else None,
+        "lean_check_command": lean_check_result.command if lean_check_result else None,
+        "lean_check_stdout": lean_check_result.stdout if lean_check_result else None,
+        "lean_check_stderr": lean_check_result.stderr if lean_check_result else None,
+        "lean_theorems_exported": lean_theorems_exported,
+        "lean_theorems_skipped": lean_theorems_skipped,
     }
 
 

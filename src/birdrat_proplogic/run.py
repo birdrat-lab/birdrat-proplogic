@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from birdrat_proplogic.archive import archive_size
 from birdrat_proplogic.config import ArchiveConfig, EvolutionConfig, ProplogicConfig
 from birdrat_proplogic.evolution import EvolutionResult, GenerationStats, evolve
 from birdrat_proplogic.formula import pretty
 from birdrat_proplogic.goals import Goal
+from birdrat_proplogic.lean_export import LeanCheckResult, check_lean_file, export_lean_proof, write_lean_file
 from birdrat_proplogic.parse import ParseError, parse_surface
 from birdrat_proplogic.proof import Invalid, proof_pretty
 from birdrat_proplogic.profiling import RuntimeProfiler, compact_runtime_summary
@@ -20,6 +22,8 @@ from birdrat_proplogic.surface import SAnd, SAtom, SImp, SurfaceFormula, desugar
 class SearchReport:
     result: EvolutionResult
     search_result: SearchResult | None = None
+    lean_export_path: Path | None = None
+    lean_check_result: LeanCheckResult | None = None
 
 
 def conjunction_commutativity_target() -> SurfaceFormula:
@@ -130,6 +134,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-archive", action="store_true")
     parser.add_argument("--no-load-archive", action="store_true")
     parser.add_argument("--no-save-archive", action="store_true")
+    parser.add_argument("--export-lean", action="store_true")
+    parser.add_argument("--lean-output", default="OUTPUT.lean")
+    parser.add_argument("--no-lean-check", action="store_true")
+    parser.add_argument("--lean-command", default="lean")
     parser.add_argument("--keep-going", action="store_true", help="continue through max generations after exact success")
     parser.add_argument("--progress-interval", type=int, default=10)
     parser.add_argument("--report-dir", default="reports/runs")
@@ -163,10 +171,46 @@ def main(argv: list[str] | None = None) -> int:
     )
     search = report.search_result
     assert search is not None
+    lean_check_result = None
+    lean_export_path = None
+    lean_lines: list[str] = []
+    if args.export_lean:
+        if not search.found or search.proof is None:
+            lean_lines.append("lean: skipped, no exact proof found")
+        else:
+            lean_export_path = Path(args.lean_output)
+            export = export_lean_proof(
+                search.proof,
+                desugar(parsed),
+                theorem_name="output",
+                output_path=lean_export_path,
+                surface_target=surface_pretty(parsed),
+                found_by=search.found_by,
+                found_phase=search.solved_in_phase,
+            )
+            write_lean_file(export)
+            lean_lines.append("lean:")
+            lean_lines.append(f"  wrote: {lean_export_path}")
+            if args.no_lean_check:
+                lean_check_result = LeanCheckResult(False, None, None, "", "", skipped_reason="disabled by --no-lean-check")
+                lean_lines.append("  checked: skipped (disabled by --no-lean-check)")
+            else:
+                lean_check_result = check_lean_file(lean_export_path, lean_command=args.lean_command)
+                if lean_check_result.checked:
+                    lean_lines.append("  checked: yes")
+                elif lean_check_result.skipped_reason:
+                    lean_lines.append(f"  checked: skipped ({lean_check_result.skipped_reason})")
+                else:
+                    lean_lines.append("  checked: no")
+                    if lean_check_result.stderr:
+                        lean_lines.append(lean_check_result.stderr.strip())
+            report = SearchReport(report.result, search, lean_export_path, lean_check_result)
     if args.verbose:
         print(render_search_report(report))
     else:
         print(render_compact_search_summary(report))
+    if args.export_lean and not args.quiet and lean_lines:
+        print("\n".join(lean_lines))
     if args.profile and not args.quiet:
         _print_runtime_summary(search)
     if not args.no_report:
@@ -179,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if not args.quiet:
             print(f"full report: {', '.join(str(path) for path in paths)}")
+    if args.export_lean and lean_check_result is not None and lean_check_result.returncode not in (None, 0):
+        return 1
     return 0
 
 
@@ -256,6 +302,11 @@ def _run_report_payload(report: SearchReport, seed: int | None, config: Proplogi
             "cd_steps": best.fitness.cd_steps,
             "cd_depth": best.fitness.cd_depth,
             "proof_size": best.fitness.proof_size,
+            "lean_export_path": report.lean_export_path,
+            "lean_checked": report.lean_check_result.checked if report.lean_check_result else None,
+            "lean_check_command": report.lean_check_result.command if report.lean_check_result else None,
+            "lean_check_stdout": report.lean_check_result.stdout if report.lean_check_result else None,
+            "lean_check_stderr": report.lean_check_result.stderr if report.lean_check_result else None,
         },
         "seed": seed,
         "config": config,
@@ -268,6 +319,8 @@ def _run_report_payload(report: SearchReport, seed: int | None, config: Proplogi
         "beam_diagnostics": result.beam_diagnostics,
         "best_proof": proof_pretty(best.proof),
         "runtime_profile": search.runtime_profile if search else None,
+        "lean_export_path": report.lean_export_path,
+        "lean_check": report.lean_check_result,
     }
 
 
