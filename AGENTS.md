@@ -1,4 +1,4 @@
-# AGENTS.md — birdrat-proplogic: Suffix Retention, Antecedent Coverage, and Beam-Local Schema Instantiation
+# AGENTS.md — birdrat-proplogic: Reporting, Runtime Analysis, and Next Benchmark Stage
 
 ## Project purpose
 
@@ -6,9 +6,18 @@
 
 The project searches for Hilbert-style proofs over the Łukasiewicz/Church `P₂` axiom schemata using condensed detachment (`CD`) as the internal inference rule. The long-term goal is to build a Lean-facing theorem generator whose proof search is restricted to an explicitly chosen set of valid logical moves.
 
-This is not a general Lean tactic prover. Do not add general Lean automation. Do not use `simp`, `tauto`, `aesop`, `omega`, Mathlib automation, or native Lean proof search to bypass the restricted proof system.
+Lean integration is a future milestone, but **not the next milestone**.
 
-The current priority is not Lean integration. The current priority is to make the internal `P₂ + CD` proof-search substrate competent on small target-only benchmarks.
+Do not add Lean integration yet. Do not add Mathlib integration yet. Do not use Lean automation to solve the current proof-search problem. The current priority is:
+
+```text
+1. stabilize the current P₂ + CD proof-search core,
+2. improve user-facing reporting,
+3. archive full diagnostic reports,
+4. add runtime/profiling instrumentation,
+5. freeze the current benchmark suite as regression coverage,
+6. then add a slightly expanded benchmark suite.
+```
 
 ---
 
@@ -130,11 +139,13 @@ Can the tool replay a known proof?
 
 ---
 
-## Current benchmark status
+# Current milestone
 
-The small target benchmark suite is the current calibration set.
+## Current success state
 
-Targets:
+The current small target-only benchmark suite is passing.
+
+Baseline targets:
 
 ```text
 1. identity:
@@ -153,943 +164,623 @@ Targets:
    (p → q) → (p → q → r) → p → r
 ```
 
-Current expected behavior:
+These should now be treated as regression benchmarks.
+
+Expected behavior:
 
 ```text
 identity:
-  should pass, typically in strict-preselected
-
-contraction:
-  should pass, typically in strict-preselected
+  must pass
 
 syllogism:
-  should pass by some phase; currently recovered in expanded-hybrid
+  must pass
 
 classical-negation:
-  may still fail, but should produce useful diagnostics
+  must pass
+
+contraction:
+  must pass
 
 distribution/application:
-  may still fail, but should produce useful diagnostics
+  must pass
 ```
 
-Do not return to encoded conjunction benchmarks such as:
+The tests should require exact proof discovery, not merely high target similarity.
+
+Use loose upper bounds for proof metrics to avoid failing on harmless proof variation. For example:
 
 ```text
-p ∧ q → p
-p ∧ q → q
-p ∧ q → q ∧ p
-```
-
-until the small target suite is reliable.
-
----
-
-## Current search architecture
-
-The search uses a default cascading policy:
-
-```text
-Phase 1: strict-preselected
-Phase 2: hybrid
-Phase 3: expanded-hybrid
-Failure: report not found
-```
-
-The user should not have to choose beam modes manually. The tool should run the cascade automatically.
-
-Current interpretation:
-
-```text
-strict-preselected:
-  fast path using target-directed CD-pair preselection
-
-hybrid:
-  fallback with suffix/subgoal and exploratory pair channels
-
-expanded-hybrid:
-  larger bounded fallback with more budget and possibly +1 beam depth
-```
-
-This cascade is useful and should remain.
-
-The next issue is that the fallback phases can recover some regressions, but suffix/subgoal tracking and schema instantiation are not yet operational enough. The next milestone is to make the beam preserve suffix-progress candidates and turn schematic lemmas into closed candidates more effectively.
-
----
-
-## Do not add proof-shape hacks
-
-Do not add one-off penalties for specific bad-looking formulas.
-
-Do not add rules such as:
-
-```text
-penalize this exact projection form
-penalize this exact Ax1 wrapper
-penalize this exact Ax2/Ax3 pattern
-```
-
-The benchmark failures should be addressed structurally through:
-
-```text
-suffix retention
-antecedent coverage
-schema instantiation
-quality-diverse retention
-better diagnostics
-```
-
-not by patching against individual plateaus.
-
----
-
-## Neutrality requirement for heuristics
-
-Do not seed the beam heuristic with proof ideas tied to a specific axiom.
-
-Do not implement rules such as:
-
-```text
-if the target contains negation, boost Ax3
-if the target looks classical, prefer Ax3-containing candidates
-if the target is implicational, prefer Ax1/Ax2
-```
-
-The beam heuristic should be target-formula driven, not axiom-family driven.
-
-Acceptable heuristic signals:
-
-```text
-- consequent of a CD major matches or unifies with the target
-- consequent of a CD major matches or unifies with a target implication suffix
-- candidate conclusion has a useful implication spine
-- candidate covers target antecedents
-- candidate has low assumption debt
-- candidate is closed when the target is closed
-- schematic candidate can be instantiated toward the target
-- proof is smaller or has fewer CD steps
-- formula size is controlled
-```
-
-Unacceptable heuristic signals:
-
-```text
-- explicit bonus for using Ax1
-- explicit bonus for using Ax2
-- explicit bonus for using Ax3
-- target-specific axiom preferences
-- benchmark-specific proof strategy rules
-```
-
-Axiom usage may be logged as diagnostics only.
-
----
-
-# Next milestone
-
-## Main goal
-
-Make suffix retention and schema instantiation operational.
-
-The current benchmark results show:
-
-```text
-identity passes
-contraction passes
-syllogism is recovered by expanded-hybrid
-classical-negation still fails
-distribution/application still fails
-```
-
-The next goal is not to solve the remaining two targets by hardcoding proof ideas.
-
-The next goal is to improve the search substrate so that it:
-
-```text
-1. preserves useful target-suffix candidates,
-2. notices whether a candidate covers the target antecedents,
-3. turns schematic lemmas into closed candidates using target-derived substitutions,
-4. reports enough diagnostics to see where the proof search is failing.
+exact proof found: required
+CD steps: bounded but generous
+CD depth: bounded but generous
+proof size: bounded but generous
+runtime: reported, not initially enforced
 ```
 
 ---
 
-# 1. Real suffix retention buckets
+# Immediate next goal: reporting and runtime analysis
 
-## Motivation
+The next implementation priority is not a new proof-search heuristic. The next implementation priority is to make the tool easier to read and easier to analyze.
 
-For a target with implication spine:
-
-```text
-A1 → A2 → ... → An → H
-```
-
-the useful target suffixes are:
+The user-facing output should say **less and more**:
 
 ```text
-H
-An → H
-A(n-1) → An → H
-...
-A1 → A2 → ... → An → H
+less:
+  less raw diagnostic noise printed to the terminal
+
+more:
+  clearer progress updates while running
+  clearer final summary
+  full detailed reports archived to files
+  runtime/profiling information preserved for analysis
 ```
 
-These suffixes are target-derived subgoals. Preserving candidates near these suffixes is a neutral formula-driven heuristic, not a proof-specific trick.
+Both the regular `run` command and the benchmark command should follow this policy.
 
-Example: syllogism
+---
+
+# User-facing reporting design
+
+## Terminal output should be concise
+
+The terminal should not dump full beam-layer diagnostics by default.
+
+During a run, print compact progress updates at a configurable interval, defaulting to every 10 generations.
+
+Suggested default:
 
 ```text
-target:
-  (p → q) → (r → p) → r → q
-
-suffixes:
-  q
-  r → q
-  (r → p) → r → q
-  (p → q) → (r → p) → r → q
+--progress-interval 10
 ```
 
-Example: distribution/application
+For very short benchmark runs with fewer than 10 generations, print at least generation 0 and the final generation.
 
-```text
-target:
-  (p → q) → (p → q → r) → p → r
-
-suffixes:
-  r
-  p → r
-  (p → q → r) → p → r
-  (p → q) → (p → q → r) → p → r
-```
-
-The distribution/application failure often produces candidates close to:
-
-```text
-((p → q → r) → p → r) → (p → q → r) → p → r
-```
-
-This suggests the search sees a useful suffix-like object but does not assemble the missing antecedent `(p → q)`. Real suffix retention should preserve candidates near the intermediate suffixes while antecedent coverage scoring distinguishes complete from incomplete candidates.
-
-## Required functions
-
-Add or maintain:
-
-```python
-implication_spine(formula: Formula) -> tuple[tuple[Formula, ...], Formula]
-```
+## Regular run progress output
 
 For:
 
-```text
-A1 → A2 → ... → An → H
+```bash
+PYTHONPATH=src python -m birdrat_proplogic.run 'target'
 ```
 
-return:
-
-```text
-((A1, A2, ..., An), H)
-```
-
-Add or maintain:
-
-```python
-implication_spine_suffixes(formula: Formula) -> tuple[Formula, ...]
-```
-
-For:
+print something like:
 
 ```text
-A1 → A2 → ... → An → H
+target: (p → q) → (p → q → r) → p → r
+phase: strict-preselected
+gen 0:  best=742.1  sim=0.61  exact=0  valid=0.97  closed=0.62  beam=4930  time=4.2s
+gen 10: best=901.4  sim=0.72  exact=0  valid=1.00  closed=0.70  beam=4930  time=12.9s
+gen 20: FOUND exact proof  cd=6  depth=4  size=13  time=18.4s
 ```
 
-return:
+Keep each progress line short.
 
-```text
-(
-    H,
-    An → H,
-    A(n-1) → An → H,
-    ...
-    A1 → A2 → ... → An → H,
-)
-```
-
-Use right-associated implication throughout.
-
-## Suffix bucket retention
-
-During beam retention, reserve slots for each suffix.
-
-Suggested configuration fields:
-
-```python
-suffix_closed_keep_per_suffix: int = 3
-suffix_schematic_keep_per_suffix: int = 3
-```
-
-or comparable names.
-
-For each suffix `S`, keep:
-
-```text
-top suffix_closed_keep_per_suffix closed candidates by similarity to S
-top suffix_schematic_keep_per_suffix schematic candidates by similarity/usefulness to S
-```
-
-These suffix survivors should be added to the next frontier alongside globally best closed/schematic candidates.
-
-Do not let one suffix consume all suffix slots. Allocate per suffix.
-
-## Ranking inside suffix buckets
-
-For a candidate conclusion `C` and suffix `S`, rank by:
-
-```text
-directed similarity to S
-antecedent coverage relative to S
-low assumption debt relative to S
-closedness when the suffix is closed
-smaller proof size
-smaller formula size
-fewer CD steps
-```
-
-A schematic candidate can survive a suffix bucket if it is close to the suffix and plausibly instantiable, but closed candidates should be preferred when available.
-
-## Deduplication
-
-Deduplicate proof candidates after combining:
-
-```text
-global closed keep
-global schematic keep
-suffix closed keep
-suffix schematic keep
-novelty keep, if applicable
-instantiated schema products
-```
-
-Deduplication can be by conclusion first, keeping the best/smallest proof for that conclusion.
-
-If proof identity is easier to track than conclusion identity, use proof identity for initial implementation but prefer conclusion-based deduplication eventually.
-
-## Suffix diagnostics
-
-Report suffix retention after retention, not before.
-
-Add diagnostics such as:
-
-```text
-suffix_survivors_by_suffix:
-  q: 2 closed, 3 schematic
-  r → q: 1 closed, 3 schematic
-  (r → p) → r → q: 3 closed, 2 schematic
-  full target: 0 closed, 1 schematic
-```
-
-The existing `suffix_survivors=[...:0]` diagnostic suggests suffix tracking is not yet operational enough. The diagnostic should show candidates actually retained in suffix buckets.
-
-Also report:
-
-```text
-suffix_candidates_seen_by_suffix
-suffix_closed_candidates_seen_by_suffix
-suffix_schematic_candidates_seen_by_suffix
-suffix_survivors_by_suffix
-```
-
----
-
-# 2. Antecedent coverage scoring
-
-## Motivation
-
-A candidate may have the correct final head but fail to use all target assumptions.
-
-For distribution/application:
-
-```text
-target:
-  (p → q) → (p → q → r) → p → r
-```
-
-the target antecedents are:
-
-```text
-p → q
-p → q → r
-p
-```
-
-and the final head is:
-
-```text
-r
-```
-
-A common attractor is:
-
-```text
-((p → q → r) → p → r) → (p → q → r) → p → r
-```
-
-This is close to a useful suffix but does not cover the antecedent:
-
-```text
-p → q
-```
-
-So ranking by consequent/head similarity alone is insufficient. The search needs a secondary score for how well candidate antecedents cover target antecedents.
-
-## Required function
-
-Add:
-
-```python
-antecedent_coverage_score(candidate: Formula, target: Formula) -> float
-```
-
-Suggested behavior:
-
-```text
-1. Flatten both formulas into implication spines.
-2. Let target antecedents be T_ants.
-3. Let candidate antecedents be C_ants.
-4. For each target antecedent t in T_ants, find the best unmatched candidate antecedent c in C_ants.
-5. Use formula similarity or unification success to score the match.
-6. Return normalized score in [0, 1].
-```
-
-A simple first implementation:
-
-```text
-coverage = matched_target_antecedents / total_target_antecedents
-```
-
-where a target antecedent is matched if:
-
-```text
-candidate antecedent exactly equals it
-or candidate antecedent unifies with it
-or directed formula similarity exceeds a threshold
-```
-
-A more graded implementation may use maximum bipartite matching with formula similarities, but that is optional.
-
-## Important asymmetry
-
-Coverage is asymmetric.
-
-A candidate should get credit for covering target assumptions. It should not get equal credit just because the target covers candidate assumptions.
-
-For target:
-
-```text
-A → B → H
-```
-
-candidate:
-
-```text
-A → H
-```
-
-covers only `A`, not `B`.
-
-candidate:
-
-```text
-A → B → C → H
-```
-
-covers `A` and `B` but has extra assumption debt `C`.
-
-Use antecedent coverage together with assumption debt.
-
-## Use sites
-
-Use antecedent coverage as a secondary term in:
-
-```text
-closed candidate ranking
-major_priority
-suffix bucket ranking
-quality-diverse closed-target scoring
-benchmark diagnostics
-```
-
-Do not let antecedent coverage dominate exact target matching. Exact target remains decisive.
-
-Do not use antecedent coverage to reward arbitrary extra assumptions. Pair it with existing assumption-debt penalties.
-
-## Example expectations
-
-For:
-
-```text
-target:
-  (p → q) → (p → q → r) → p → r
-```
-
-candidate:
-
-```text
-((p → q → r) → p → r) → (p → q → r) → p → r
-```
-
-should receive:
-
-```text
-head/suffix similarity: moderately high
-antecedent coverage: incomplete
-assumption debt / missing assumption issue: significant
-```
-
-candidate:
-
-```text
-(p → q) → (p → q → r) → p → r
-```
-
-should receive:
-
-```text
-antecedent coverage: 1.0
-exact target: true
-```
-
-For syllogism:
-
-```text
-target:
-  (p → q) → (r → p) → r → q
-```
-
-candidate:
-
-```text
-(p → q) → p → q
-```
-
-should receive:
-
-```text
-final head match: yes
-coverage: incomplete
-missing contextual assumptions: r → p and r
-```
-
----
-
-# 3. Beam-local schema instantiation
-
-## Motivation
-
-The search often discovers useful schematic lemmas. Examples include:
-
-```text
-(p → ?x) → p → ?x
-
-(?p → ?p → ?r) → ?p → ?r
-
-(¬?p → ¬?q) → ?q → ?p
-```
-
-These are legitimate schematic theorem candidates. But a schematic formula is not a closed proof of the user target.
-
-The search needs to instantiate schematic candidates using target-derived formulas and feed the instantiated results back into the beam.
-
-This should happen inside the beam, not only after final selection.
-
-## Closed versus schematic invariant
-
-Maintain:
-
-```python
-metas(formula) -> set[Meta]
-is_closed_formula(formula) -> bool
-```
-
-Definitions:
-
-```text
-closed formula:
-  contains no Meta variables
-
-schematic formula:
-  contains one or more Meta variables
-```
-
-Rules:
-
-```text
-- Only closed candidates may compete as target-proof elites.
-- Only closed candidates may compete as generated-region elites.
-- Schematic candidates should be stored and ranked separately as lemma schemas.
-- A schematic candidate may be promoted only if it can be instantiated into a closed target or closed generated-region candidate.
-```
-
-A valid schematic theorem is not a valid proof of the input theorem.
-
-## Target formula pool for instantiation
-
-Build a small formula pool for schema instantiation.
-
-Include:
-
-```text
-atoms from target and regions
-target antecedents
-target head
-target implication suffixes
-target formula itself
-generated region formulas
-subformulas of target
-subformulas of generated regions
-selected negations
-selected small implications
-```
-
-Keep this pool small and deterministic.
-
-Suggested caps:
-
-```python
-schema_instantiation_pool_size: int = 50
-schema_instantiation_max_metas: int = 2
-schema_instantiation_max_attempts_per_proof: int = 100
-```
-
-Start conservative. Increase only after diagnostics show the need.
-
-## Required proof substitution
-
-Add or maintain:
-
-```python
-apply_substitution_to_proof(proof: Proof, subst: Mapping[Meta, Formula]) -> Proof
-```
-
-This should replace metas consistently throughout the proof tree.
-
-After substitution:
-
-```text
-1. recompute conclusion
-2. verify the proof remains valid under the internal checker
-3. discard invalid instantiated proofs
-```
-
-If the proof dataclasses use `Meta(name)` objects rather than string keys, be consistent in substitution representation.
-
-## Beam-local instantiation procedure
-
-During each beam layer, after candidate generation and before final retention:
-
-```text
-1. collect top schematic candidates
-2. for each schematic candidate:
-     a. inspect metas in its conclusion
-     b. generate a bounded set of substitutions from the target formula pool
-     c. instantiate the proof
-     d. verify instantiated proof
-     e. add valid instantiated candidates to the candidate pool
-3. allow instantiated candidates to compete in closed/schematic/suffix retention
-```
-
-This is important: instantiated products should feed the next frontier if retained.
-
-## Direct schema-target unification
-
-Also support direct unification against target, regions, and suffixes:
-
-```text
-if unify(schema_conclusion, target_or_region_or_suffix) succeeds:
-    instantiate proof using that unifier
-    verify instantiated proof
-    add valid instantiated proof to candidates
-```
-
-This can catch exact promotions cheaply.
-
-## Instantiation diagnostics
-
-Report:
-
-```text
-schema_instantiation_attempts
-schema_instantiation_valid
-schema_instantiation_closed
-schema_instantiation_schematic
-schema_instantiation_exact_target
-schema_instantiation_exact_region
-schema_instantiation_exact_suffix
-best_instantiated_candidate
-```
-
-Also report per phase and per beam layer if possible.
-
-The current benchmark logs report only `schema instantiation products`. That is too coarse. Add enough detail to determine whether instantiation is not being attempted, invalidating, staying schematic, or simply not useful.
-
----
-
-# 4. Target-directed pair generation remains necessary
-
-The beam should avoid trying all ordered CD pairs.
-
-Avoid the naive pattern:
-
-```python
-for major in pair_pool:
-    for minor in pair_pool:
-        try_make_cd(major, minor)
-```
-
-This becomes effectively quadratic in the pair-pool size.
-
-A CD step proves `B` when:
-
-```text
-major proves A → B
-minor proves A
-```
-
-Therefore, for a target `T`, good major candidates are implications whose consequents are useful relative to `T`.
-
-## Pair channels
-
-The cascade should preserve multiple pair channels:
-
-```text
-strict target-prioritized pairs
-suffix/subgoal-diverse pairs
-exploratory compatible pairs
-```
-
-Later phases should be monotone: they should include the earlier strict channel and add additional channels, not replace strict search with a different search.
-
-## Prioritized pairs
-
-Prioritized-pair ranking should use:
-
-```text
-- major consequent equals target
-- major consequent unifies with target
-- major consequent equals a generated region
-- major consequent unifies with a generated region
-- major consequent has high directed similarity to target/regions
-- candidate has low assumption debt
-- candidate is not pure vacuous weakening
-- proof and formula sizes are controlled
-```
-
-## Suffix pairs
-
-Suffix pairs should target major consequents near implication suffixes.
-
-For each suffix:
-
-```text
-collect candidate pairs whose major consequent is close to that suffix
-rank by suffix similarity, antecedent coverage, proof size, formula size
-keep a bounded number per suffix
-```
-
-Do not let all suffix-channel budget go to the final head. Distribute across suffixes.
-
-## Exploratory pairs
-
-The exploratory channel prevents catastrophic pruning.
-
-It should remain compatible-pair based, not arbitrary invalid-pair search.
-
-Acceptable exploratory sources:
-
-```text
-random compatible pairs from the current pair pool
-novelty-ranked compatible pairs
-pairs involving underrepresented behavior descriptors
-pairs involving closed candidates not selected by target-prioritized channel
-pairs involving schematic candidates not selected by target-prioritized channel
-```
-
-Keep the exploratory budget small.
-
----
-
-# 5. Quality-diversity selection
-
-The search should not rely on one scalar fitness score as the only survival mechanism.
-
-Use separate elite buckets:
-
-```text
-closed target elites:
-  closed candidates closest to the full target
-
-closed region elites:
-  closed candidates closest to generated regions
-
-suffix elites:
-  candidates close to target implication suffixes
-
-schematic lemma elites:
-  valid schematic candidates that are compact and potentially reusable
-
-novelty elites:
-  candidates whose behavior descriptors are far from known candidates
-
-random immigrants:
-  fresh target-seeded candidates injected each generation
-```
-
-The exact allocation can be configurable.
-
-The important rule is:
-
-```text
-Do not let a single scalar score define the whole next generation.
-```
-
----
-
-# 6. Diagnostics
-
-Add or preserve broad diagnostics:
+Suggested fields:
 
 ```text
 generation
-active depth
-valid_fraction
-closed_fraction
-schematic_fraction
-exact_target_count
-exact_region_count
-best_closed_target_candidate
-best_closed_region_candidate
-best_schema_candidate
-best_novelty_candidate
-unique_behavior_count
-behavior_archive_size
-schema_archive_size
-random_immigrant_count
-beam_pool_size
-beam_pair_attempts
-beam_pair_budget
-beam_layer_counts
-mean_cd_steps
-mean_substantive_cd_steps
-mean_cd_depth
-mean_proof_size
-mean_formula_size
+phase name
+best score
+best target similarity
+exact target count
+valid fraction
+closed fraction
+beam valid products or beam pool size
+elapsed time
 ```
 
-Beam-specific diagnostics:
+Do not include by default:
 
 ```text
-major candidates considered
-compatible minor candidates found
-CD pairs attempted
-valid CD products
-closed products generated
-schematic products generated
-closed products kept
-schematic products kept
-instantiated schema products
+full proof tree
+full best schematic candidate
+full novelty candidate
+full beam layer counts
+full suffix diagnostics
+full schema-instantiation diagnostics
+axiom-family telemetry
 ```
 
-Suffix diagnostics:
+Those belong in the archived full report.
+
+## Benchmark progress output
+
+For:
+
+```bash
+PYTHONPATH=src python -m birdrat_proplogic.run_benchmarks --small-targets
+```
+
+print a compact per-target status.
+
+Example:
 
 ```text
-suffixes
-suffix_candidates_seen_by_suffix
-suffix_closed_candidates_seen_by_suffix
-suffix_schematic_candidates_seen_by_suffix
-suffix_survivors_by_suffix
-best_candidate_by_suffix
+[1/5] identity
+  strict-preselected: FOUND cd=2 depth=2 size=5 time=0.7s
+
+[2/5] syllogism
+  strict-preselected: FOUND cd=3 depth=3 size=7 time=20.1s
+
+[3/5] classical-negation
+  strict-preselected: FOUND cd=3 depth=3 size=7 time=15.4s
+
+[4/5] contraction
+  strict-preselected: FOUND cd=3 depth=2 size=7 time=34.0s
+
+[5/5] distribution/application
+  strict-preselected: FOUND cd=6 depth=4 size=13 time=79.5s
 ```
 
-Schema-instantiation diagnostics:
+At the end, print a compact table:
 
 ```text
-schema_instantiation_attempts
-schema_instantiation_valid
-schema_instantiation_closed
-schema_instantiation_schematic
-schema_instantiation_exact_target
-schema_instantiation_exact_region
-schema_instantiation_exact_suffix
-best_instantiated_candidate
+summary
+name                      found  phase               cd  depth  size  runtime
+identity                  yes    strict-preselected  2   2      5     0.7s
+syllogism                 yes    strict-preselected  3   3      7     20.1s
+classical-negation         yes    strict-preselected  3   3      7     15.4s
+contraction               yes    strict-preselected  3   2      7     34.0s
+distribution/application   yes    strict-preselected  6   4      13    79.5s
+
+full report: reports/benchmarks/small-targets-YYYYMMDD-HHMMSS.json
 ```
 
-Axiom-family diagnostics are allowed as telemetry only:
+If a benchmark fails:
 
 ```text
-generated_ax1_fraction
-generated_ax2_fraction
-generated_ax3_fraction
-
-kept_ax1_fraction
-kept_ax2_fraction
-kept_ax3_fraction
-
-best_candidate_using_ax1
-best_candidate_using_ax2
-best_candidate_using_ax3
+distribution/application   no     none                -   -      -     120.0s
+  best closed: ...
+  best similarity: 0.74
+  full report: ...
 ```
 
-Do not feed axiom-family diagnostics back into scoring as bonuses.
+Keep the terminal failure detail short.
 
 ---
 
-# 7. Regression expectations
+# Full report archival
 
-The benchmark suite should guard against regressions.
+## Full reports should be archived automatically
 
-Expected near-term results:
+By default, both `run` and `run_benchmarks` should save a full report to disk.
+
+Suggested default output directories:
 
 ```text
-identity:
-  must be found
-
-contraction:
-  must be found
-
-syllogism:
-  must be found by some cascade phase
-
-classical-negation:
-  may still fail
-  should show useful schema-instantiation and suffix diagnostics
-
-distribution/application:
-  may still fail
-  should show useful antecedent-coverage, suffix-retention, and schema-instantiation diagnostics
+reports/runs/
+reports/benchmarks/
 ```
 
-Do not treat classical-negation and distribution/application as hard failures yet. They are active search targets.
+Suggested filenames:
+
+```text
+reports/runs/run-YYYYMMDD-HHMMSS.json
+reports/benchmarks/small-targets-YYYYMMDD-HHMMSS.json
+```
+
+Optionally also support Markdown reports:
+
+```text
+reports/runs/run-YYYYMMDD-HHMMSS.md
+reports/benchmarks/small-targets-YYYYMMDD-HHMMSS.md
+```
+
+Add CLI options:
+
+```text
+--report-dir PATH
+--no-report
+--report-format json
+--report-format md
+--report-format both
+```
+
+Default:
+
+```text
+--report-format json
+```
+
+or, if easy:
+
+```text
+--report-format both
+```
+
+## Full report contents
+
+The archived full report should include everything needed to analyze the run.
+
+For a regular run:
+
+```text
+target surface formula
+core target formula
+generated regions
+configuration
+random seed
+phases attempted
+phase reports
+progress snapshots
+final result
+best proof if found
+best closed candidate
+best schematic candidate
+best novelty candidate
+beam diagnostics
+suffix diagnostics
+schema-instantiation diagnostics
+axiom-family diagnostics
+runtime profile
+```
+
+For benchmarks:
+
+```text
+benchmark suite name
+per-target configurations
+per-target result summaries
+per-target phase reports
+per-target proof metrics
+per-target runtime profile
+overall summary table
+```
+
+## Store found proofs
+
+When an exact proof is found, the report should store:
+
+```text
+surface target
+core target
+conclusion
+proof tree
+expanded numbered proof
+CD steps
+CD depth
+proof size
+formula size
+phase found
+seed/config
+```
+
+Do not feed archived proofs back into future searches unless explicitly requested. Reports are for inspection and regression analysis, not proof seeding.
 
 ---
 
-# 8. Recommended implementation order
+# Runtime analysis
 
-Implement the next changes in this order:
+## Motivation
+
+The benchmark suite now passes, but runtime varies substantially between targets. Before expanding the benchmark suite, add runtime analysis and profiling instrumentation.
+
+The goal is to understand where time is going:
 
 ```text
-1. Add real suffix retention buckets in the beam.
-2. Add suffix retention diagnostics after retention.
-3. Add antecedent_coverage_score.
-4. Use antecedent coverage in closed ranking, major priority, and suffix bucket ranking.
-5. Add beam-local schema instantiation.
-6. Add detailed schema-instantiation diagnostics.
-7. Re-run the five target-only benchmarks.
-8. Confirm identity, contraction, and syllogism still pass.
-9. Examine classical-negation and distribution/application diagnostics.
-10. Only then decide whether further structural changes are needed.
+unification
+conclusion recomputation
+formula similarity
+schema instantiation
+proof substitution
+candidate deduplication
+beam pair generation
+beam candidate ranking
+fitness scoring
+quality-diverse selection
+```
+
+## Add a runtime profiler
+
+Implement a lightweight internal profiler.
+
+Suggested API:
+
+```python
+class RuntimeProfiler:
+    def start(section: str) -> None: ...
+    def stop(section: str) -> None: ...
+    def time_block(section: str): ...
+    def increment(counter: str, amount: int = 1) -> None: ...
+    def snapshot() -> RuntimeProfile: ...
+```
+
+or use a simple context manager:
+
+```python
+with profiler.section("beam.pair_generation"):
+    ...
+```
+
+Do not over-engineer.
+
+## Sections to time
+
+At minimum, time:
+
+```text
+total
+parse_surface
+generate_regions
+formula_pool_construction
+beam.total
+beam.seed_generation
+beam.pair_generation
+beam.try_cd
+beam.retention
+beam.suffix_retention
+beam.schema_instantiation
+evolution.total
+evolution.scoring
+evolution.selection
+evolution.mutation
+quality.novelty
+fitness.total
+unify.total
+conclusion.total
+formula_similarity.total
+report_writing
+```
+
+## Counters to track
+
+At minimum, count:
+
+```text
+unify.calls
+unify.successes
+unify.failures
+
+conclusion.calls
+
+formula_similarity.calls
+
+try_cd.calls
+try_cd.valid
+try_cd.invalid
+
+beam.pairs_considered
+beam.pairs_attempted
+beam.valid_products
+beam.closed_products
+beam.schematic_products
+
+schema_instantiation.attempts
+schema_instantiation.valid
+schema_instantiation.closed
+schema_instantiation.exact_target
+schema_instantiation.exact_region
+schema_instantiation.exact_suffix
+
+dedup.input_count
+dedup.output_count
+
+fitness.calls
+```
+
+## Runtime report output
+
+Terminal output should include only a compact runtime summary, for example:
+
+```text
+runtime summary:
+  total: 79.5s
+  beam: 72.1s
+  schema instantiation: 18.4s
+  unification: 25.7s
+  fitness: 8.3s
+  report: 0.2s
+```
+
+The archived full report should include the complete profile.
+
+## Optional detailed profile command
+
+Add:
+
+```text
+--profile
+```
+
+Behavior:
+
+```text
+- include compact runtime summary in terminal
+- save full runtime profile in report
+```
+
+If profiling overhead is small, it may be enabled by default for benchmarks.
+
+---
+
+# Caching and performance follow-up
+
+After runtime instrumentation is in place, use the profile to decide what to cache or optimize.
+
+Likely candidates:
+
+```text
+conclusion(proof)
+formula_size(formula)
+implication_spine(formula)
+implication_spine_suffixes(formula)
+formula_similarity(a, b)
+unify(a, b)
+proof metrics:
+  cd_steps
+  cd_depth
+  proof_size
+```
+
+Do not blindly cache everything before profiling. Add instrumentation first, inspect the data, then optimize.
+
+Possible cache implementation:
+
+```python
+functools.lru_cache
+```
+
+works best when formulas/proofs are immutable and hashable.
+
+If proof objects are large, consider caching by object identity or canonical structural key.
+
+---
+
+# Proof minimization: next after profiling, not now
+
+Proof minimization is desirable but should wait until reporting and runtime analysis are stable.
+
+Future proof-minimization ideas:
+
+```text
+given exact proof P:
+  verify P
+  canonicalize metavariable names
+  deduplicate identical subproofs/conclusions
+  try greedy subtree replacement from archive
+  rerun bounded search for the same conclusion with smaller size
+  reverify minimized proof
+```
+
+Do not implement proof minimization in this reporting/profiling milestone unless explicitly requested.
+
+---
+
+# Slightly expanded benchmark suite: next after runtime analysis
+
+After reporting and runtime profiling are in place, add a slightly expanded benchmark suite.
+
+Do not jump directly to encoded conjunction as the only next target.
+
+Suggested next tier:
+
+```text
+double-negation introduction:
+  p → ¬¬p
+
+contraposition-like:
+  (p → q) → ¬q → ¬p
+
+permutation:
+  (p → q → r) → q → p → r
+
+composition:
+  (q → r) → (p → q) → p → r
+```
+
+Then return to encoded connective targets:
+
+```text
+encoded left projection:
+  p ∧ q → p
+  core: ¬(p → ¬q) → p
+
+encoded right projection:
+  p ∧ q → q
+  core: ¬(p → ¬q) → q
+
+encoded conjunction commutativity:
+  p ∧ q → q ∧ p
+  core: ¬(p → ¬q) → ¬(q → ¬p)
+```
+
+Add these as target-only benchmarks. Do not hardcode proofs.
+
+---
+
+# Regular run and benchmark run should share reporting infrastructure
+
+Avoid duplicating reporting logic.
+
+Implement shared data structures where possible:
+
+```python
+RunSummary
+BenchmarkSummary
+PhaseReport
+ProgressSnapshot
+RuntimeProfile
+ProofReport
+```
+
+Both commands should use the same report writer.
+
+Suggested modules:
+
+```text
+reporting.py
+profiling.py
+```
+
+or similar.
+
+---
+
+# CLI changes
+
+Suggested additions:
+
+```text
+--progress-interval N
+--report-dir PATH
+--report-format json|md|both
+--no-report
+--profile
+--quiet
+--verbose
+```
+
+Default behavior:
+
+```text
+progress interval: 10 generations
+report: enabled
+report format: json
+profile: enabled for benchmarks, optional for single runs
+quiet: false
+verbose: false
+```
+
+`--verbose` may print more diagnostic detail to terminal, but the default should remain concise.
+
+`--quiet` should print only final summary and report path.
+
+---
+
+# Regression expectations
+
+After this milestone:
+
+```text
+run_benchmarks --small-targets
+```
+
+should:
+
+```text
+- solve all five current targets,
+- print compact per-target progress,
+- print a compact final summary table,
+- write a full report to disk,
+- include runtime profile data in the report.
+```
+
+The current passing suite should not regress.
+
+Expected baseline:
+
+```text
+identity: found
+syllogism: found
+classical-negation: found
+contraction: found
+distribution/application: found
 ```
 
 ---
 
-# 9. Non-goals for the next milestone
+# Non-goals for this milestone
 
 Do not implement:
 
@@ -1100,11 +791,22 @@ native Lean AST parsing
 natural-deduction tactics
 surface-level conjunction elimination as a primitive rule
 hardcoded known proofs
-proof-string replay as a benchmark
+proof-string replay as benchmark logic
 large external proof database ingestion
 more one-off bad-shape penalties
 axiom-family selection bonuses
 target-specific axiom preferences
+proof minimization
+expanded benchmark suite before reporting/profiling is stable
+```
+
+Lean integration is an upcoming milestone after:
+
+```text
+1. current benchmark suite is stable,
+2. reporting is usable,
+3. runtime analysis is available,
+4. a slightly expanded suite has been attempted.
 ```
 
 ---
@@ -1114,17 +816,26 @@ target-specific axiom preferences
 Current status:
 
 ```text
-The system solves identity, contraction, and recovered syllogism.
-The remaining failures are classical-negation and distribution/application.
+The tool now passes the five-target P₂ + CD benchmark suite.
 ```
 
-Near-term fix:
+Immediate next milestone:
 
 ```text
-real suffix retention buckets
-+ antecedent coverage scoring
-+ beam-local schema instantiation
-+ detailed diagnostics
+concise progress output
++ compact final summaries
++ archived full reports
++ runtime profiling
 ```
 
-This should improve the search substrate without hardcoding proofs or inserting axiom-specific proof strategy.
+Then:
+
+```text
+slightly expanded benchmark suite
+```
+
+Then later:
+
+```text
+Lean integration
+```

@@ -31,6 +31,7 @@ from birdrat_proplogic.proof import (
     is_vacuous_cd,
     proof_size,
 )
+from birdrat_proplogic.profiling import RuntimeProfiler
 from birdrat_proplogic.quality import apply_proof_subst, behavior_descriptor, lemma_schema_score, novelty_score
 from birdrat_proplogic.quality import uses_ax1, uses_ax2, uses_ax3
 from birdrat_proplogic.seed import try_make_cd
@@ -144,7 +145,9 @@ def cd_beam_search_result(
     regions: tuple[Goal, ...],
     formula_pool: tuple[Formula, ...],
     config: ProplogicConfig = DEFAULT_CONFIG,
+    profiler: RuntimeProfiler | None = None,
 ) -> BeamSearchResult:
+    profiler = profiler or RuntimeProfiler(enabled=False)
     evolution_config = config.evolution
     width = max(1, evolution_config.beam_width)
     max_depth = max(0, evolution_config.beam_max_depth)
@@ -153,7 +156,8 @@ def cd_beam_search_result(
     if not evolution_config.beam_enabled:
         return BeamSearchResult((), BeamDiagnostics(width, max_depth, pair_budget, major_budget))
 
-    seeds = tuple(seeded_axiom_instances(formula_pool, width))
+    with profiler.section("beam.seed_generation"):
+        seeds = tuple(seeded_axiom_instances(formula_pool, width))
     known: list[Proof] = list(seeds)
     frontier: tuple[Proof, ...] = tuple(known)
     behavior_archive = tuple(behavior_descriptor(proof) for proof in known)
@@ -162,55 +166,75 @@ def cd_beam_search_result(
     for depth in range(max_depth):
         pair_pool = tuple(_dedupe(list(seeds) + list(known[-width:]) + list(frontier)))
         new: list[Proof] = []
-        pair_selection = candidate_pairs(
-            pair_pool,
-            target,
-            regions,
-            config,
-            major_budget=major_budget,
-            pair_budget=pair_budget,
-        )
+        with profiler.section("beam.pair_generation"):
+            pair_selection = candidate_pairs(
+                pair_pool,
+                target,
+                regions,
+                config,
+                major_budget=major_budget,
+                pair_budget=pair_budget,
+            )
         pairs = pair_selection.pairs
+        profiler.increment("beam.pairs_attempted", len(pairs))
 
-        for _, major, minor in pairs:
-            candidate = try_make_cd(major, minor)
-            if candidate is None or candidate in known or candidate in new:
-                continue
-            new.append(candidate)
+        with profiler.section("beam.try_cd"):
+            for _, major, minor in pairs:
+                profiler.increment("try_cd.calls")
+                candidate = try_make_cd(major, minor)
+                if candidate is None:
+                    profiler.increment("try_cd.invalid")
+                    continue
+                profiler.increment("try_cd.valid")
+                if candidate in known or candidate in new:
+                    continue
+                new.append(candidate)
 
         closed, schematic = _partition_valid(new)
-        instantiated, schema_diagnostics = _instantiate_schematic_candidates(
-            schematic,
-            target,
-            regions,
-            formula_pool,
-            config,
-            width,
-        )
+        with profiler.section("beam.schema_instantiation"):
+            instantiated, schema_diagnostics = _instantiate_schematic_candidates(
+                schematic,
+                target,
+                regions,
+                formula_pool,
+                config,
+                width,
+            )
+            profiler.increment("schema_instantiation.attempts", schema_diagnostics.attempts)
+            profiler.increment("schema_instantiation.valid", schema_diagnostics.valid)
+            profiler.increment("schema_instantiation.closed", schema_diagnostics.closed)
+            profiler.increment("schema_instantiation.exact_target", schema_diagnostics.exact_target)
+            profiler.increment("schema_instantiation.exact_region", schema_diagnostics.exact_region)
+            profiler.increment("schema_instantiation.exact_suffix", schema_diagnostics.exact_suffix)
         for proof in instantiated:
             if proof not in known and proof not in new:
                 new.append(proof)
         closed, schematic = _partition_valid(new)
-        global_closed = _rank_closed(closed, target, regions, config, width)
-        global_schematic = _rank_schematic(
-            schematic,
-            target,
-            regions,
-            behavior_archive,
-            config,
-            width,
-        )
-        kept_closed, kept_schematic, suffix_diagnostics = _retain_with_suffix_buckets(
-            closed,
-            schematic,
-            global_closed,
-            global_schematic,
-            target,
-            regions,
-            behavior_archive,
-            config,
-            width,
-        )
+        profiler.increment("beam.valid_products", len(new))
+        profiler.increment("beam.closed_products", len(closed))
+        profiler.increment("beam.schematic_products", len(schematic))
+        with profiler.section("beam.retention"):
+            global_closed = _rank_closed(closed, target, regions, config, width)
+            global_schematic = _rank_schematic(
+                schematic,
+                target,
+                regions,
+                behavior_archive,
+                config,
+                width,
+            )
+            with profiler.section("beam.suffix_retention"):
+                kept_closed, kept_schematic, suffix_diagnostics = _retain_with_suffix_buckets(
+                    closed,
+                    schematic,
+                    global_closed,
+                    global_schematic,
+                    target,
+                    regions,
+                    behavior_archive,
+                    config,
+                    width,
+                )
         layers.append(
             _beam_layer_stats(
                 depth,

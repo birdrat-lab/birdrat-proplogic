@@ -65,6 +65,36 @@ def surface_pretty(formula: SurfaceFormula) -> str:
     return _surface_pretty(formula, 0)
 
 
+def surface_implication_spine(formula: SurfaceFormula) -> tuple[tuple[SurfaceFormula, ...], SurfaceFormula]:
+    antecedents: list[SurfaceFormula] = []
+    current = formula
+    while isinstance(current, SImp):
+        antecedents.append(current.left)
+        current = current.right
+    return (tuple(antecedents), current)
+
+
+def surface_sequent_pretty(formula: SurfaceFormula) -> str:
+    antecedents, conclusion = surface_implication_spine(formula)
+    if not antecedents:
+        return surface_pretty(conclusion)
+    return f"{', '.join(surface_pretty(item) for item in antecedents)} |- {surface_pretty(conclusion)}"
+
+
+def surface_display_lines(formula: SurfaceFormula) -> tuple[str, ...]:
+    antecedents, conclusion = surface_implication_spine(formula)
+    if not antecedents:
+        return (surface_pretty(conclusion),)
+    lines = ["assumptions:"]
+    lines.extend(f"  {index}. {surface_pretty(antecedent)}" for index, antecedent in enumerate(antecedents, start=1))
+    lines.extend(("conclusion:", f"  {surface_pretty(conclusion)}"))
+    return tuple(lines)
+
+
+def surface_display(formula: SurfaceFormula) -> str:
+    return "\n".join(surface_display_lines(formula))
+
+
 def _surface_pretty(formula: SurfaceFormula, parent_prec: int) -> str:
     match formula:
         case SAtom(name):
@@ -89,4 +119,3 @@ def _surface_pretty(formula: SurfaceFormula, parent_prec: int) -> str:
     if prec < parent_prec:
         return f"({text})"
     return text
-

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from random import Random
+from time import perf_counter
+from typing import Callable
 
 from birdrat_proplogic.archive import ProofArchive, empty_archive, update_archive
 from birdrat_proplogic.beam import BeamDiagnostics, cd_beam_search_result
@@ -13,6 +15,7 @@ from birdrat_proplogic.goals import Goal, extract_goals
 from birdrat_proplogic.lib.archive_json import load_archive_json, save_archive_json
 from birdrat_proplogic.mutate import mutate_proof
 from birdrat_proplogic.proof import Invalid, Proof, substantive_cd_steps
+from birdrat_proplogic.profiling import RuntimeProfiler
 from birdrat_proplogic.quality import (
     QualityArchives,
     QualitySelectionResult,
@@ -36,6 +39,7 @@ class GenerationStats:
     generation: int
     active_proof_depth: int
     best_score: float
+    best_target_similarity: float
     best_conclusion: str
     best_exact: bool
     best_valid: bool
@@ -84,16 +88,23 @@ def evolve(
     config: ProplogicConfig = DEFAULT_CONFIG,
     rng: Random | None = None,
     seed: int | None = None,
+    progress_callback: Callable[[GenerationStats, float], None] | None = None,
+    profiler: RuntimeProfiler | None = None,
 ) -> EvolutionResult:
+    phase_started = perf_counter()
+    profiler = profiler or RuntimeProfiler(enabled=False)
     random = _make_rng(rng, seed)
     evolution_config = config.evolution
-    regions = extract_goals(target, config)
+    with profiler.section("generate_regions"):
+        regions = extract_goals(target, config)
     core_target = desugar(target)
     active_depth = _active_depth(0, config)
     active_config = _config_for_depth(config, active_depth)
     region_targets = tuple(region.core_theorem() for region in regions)
-    formula_pool = formula_pool_from_target(core_target, region_targets)
-    beam_result = cd_beam_search_result(core_target, regions, formula_pool, active_config)
+    with profiler.section("formula_pool_construction"):
+        formula_pool = formula_pool_from_target(core_target, region_targets)
+    with profiler.section("beam.total"):
+        beam_result = cd_beam_search_result(core_target, regions, formula_pool, active_config, profiler=profiler)
     beam_pool = beam_result.proofs
     population = tuple(
         initialize_population_from_target(
@@ -112,42 +123,45 @@ def evolve(
     quality_archives = QualityArchives()
     last_selection = QualitySelectionResult((), (), (), (), (), (), ())
 
-    scored = _score_population(population, core_target, regions, active_config)
+    scored = _score_population(population, core_target, regions, active_config, profiler)
     best = scored[0]
 
     for generation in range(evolution_config.max_generations):
         active_depth = _active_depth(generation, config)
         active_config = _config_for_depth(config, active_depth)
-        scored = _score_population(population, core_target, regions, active_config)
+        scored = _score_population(population, core_target, regions, active_config, profiler)
         archive = update_archive(archive, _archive_items(scored), active_config)
         best = max(best, scored[0], key=lambda item: item.fitness.score)
-        history.append(
-            _generation_stats(
-                generation,
-                active_depth,
-                scored,
-                quality_archives,
-                last_selection,
-                len(beam_pool),
-                beam_result.diagnostics,
-            )
+        stats = _generation_stats(
+            generation,
+            active_depth,
+            scored,
+            quality_archives,
+            last_selection,
+            len(beam_pool),
+            beam_result.diagnostics,
         )
+        history.append(stats)
+        if progress_callback is not None:
+            progress_callback(stats, perf_counter() - phase_started)
 
         if evolution_config.stop_on_exact and scored[0].fitness.exact_target:
             break
 
-        children = _make_children(scored, active_config, random, formula_pool)
+        with profiler.section("evolution.mutation"):
+            children = _make_children(scored, active_config, random, formula_pool)
         candidate_population = population + children + beam_pool
-        candidate_scored = _score_population(candidate_population, core_target, regions, active_config)
-        selection = select_quality_diverse_population(
-            candidate_scored,
-            core_target,
-            regions,
-            quality_archives,
-            active_config,
-            random,
-            formula_pool,
-        )
+        candidate_scored = _score_population(candidate_population, core_target, regions, active_config, profiler)
+        with profiler.section("evolution.selection"):
+            selection = select_quality_diverse_population(
+                candidate_scored,
+                core_target,
+                regions,
+                quality_archives,
+                active_config,
+                random,
+                formula_pool,
+            )
         quality_archives = update_quality_archives(
             quality_archives,
             candidate_scored,
@@ -159,10 +173,11 @@ def evolve(
         last_selection = selection
         population = selection.population
 
-    final_scored = _score_population(population, core_target, regions, _config_for_depth(config, active_depth))
+    final_scored = _score_population(population, core_target, regions, _config_for_depth(config, active_depth), profiler)
     archive = update_archive(archive, _archive_items(final_scored), _config_for_depth(config, active_depth))
     best = max(best, final_scored[0], key=lambda item: item.fitness.score)
     _save_archive(archive, config)
+    profiler.add_time("evolution.total", perf_counter() - phase_started)
     return EvolutionResult(
         target=target,
         regions=regions,
@@ -204,11 +219,15 @@ def _score_population(
     target: Formula,
     regions: tuple[Goal, ...],
     config: ProplogicConfig,
+    profiler: RuntimeProfiler | None = None,
 ) -> tuple[ScoredProof, ...]:
-    scored = tuple(
-        ScoredProof(proof=proof, fitness=total_fitness(proof, target, regions, config))
-        for proof in population
-    )
+    profiler = profiler or RuntimeProfiler(enabled=False)
+    profiler.increment("fitness.calls", len(population))
+    with profiler.section("fitness.total"):
+        scored = tuple(
+            ScoredProof(proof=proof, fitness=total_fitness(proof, target, regions, config))
+            for proof in population
+        )
     return tuple(sorted(scored, key=lambda item: item.fitness.score, reverse=True))
 
 
@@ -279,6 +298,7 @@ def _generation_stats(
         generation=generation,
         active_proof_depth=active_depth,
         best_score=best.fitness.score,
+        best_target_similarity=best.fitness.target_similarity,
         best_conclusion=best_conclusion_text,
         best_exact=best.fitness.exact_target,
         best_valid=best.fitness.valid,

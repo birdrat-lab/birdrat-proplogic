@@ -1,5 +1,16 @@
 from birdrat_proplogic.formula import Atom, Imp, Meta, Not, formula_size, is_closed_formula, metas, pretty
-from birdrat_proplogic.surface import SAnd, SAtom, SIff, SImp, SOr, desugar, surface_pretty
+from birdrat_proplogic.surface import (
+    SAnd,
+    SAtom,
+    SIff,
+    SImp,
+    SOr,
+    desugar,
+    surface_display,
+    surface_implication_spine,
+    surface_pretty,
+    surface_sequent_pretty,
+)
 
 
 def test_formula_equality() -> None:
@@ -50,3 +61,26 @@ def test_desugaring_spec_example() -> None:
 
 def test_surface_pretty_printing() -> None:
     assert surface_pretty(SImp(SAnd(SAtom("a"), SAtom("b")), SAtom("c"))) == "a ∧ b → c"
+
+
+def test_surface_sequent_display_for_implication_spine() -> None:
+    formula = SImp(
+        SImp(SAtom("p"), SAtom("q")),
+        SImp(SImp(SAtom("r"), SAtom("p")), SImp(SAtom("r"), SAtom("q"))),
+    )
+
+    assert surface_implication_spine(formula) == (
+        (SImp(SAtom("p"), SAtom("q")), SImp(SAtom("r"), SAtom("p")), SAtom("r")),
+        SAtom("q"),
+    )
+    assert surface_sequent_pretty(formula) == "p → q, r → p, r |- q"
+    assert surface_display(formula) == "\n".join(
+        (
+            "assumptions:",
+            "  1. p → q",
+            "  2. r → p",
+            "  3. r",
+            "conclusion:",
+            "  q",
+        )
+    )

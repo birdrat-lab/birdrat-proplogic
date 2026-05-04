@@ -20,6 +20,17 @@ def test_parse_implication_is_right_associative() -> None:
     assert parse_surface("a -> b -> c") == SImp(SAtom("a"), SImp(SAtom("b"), SAtom("c")))
 
 
+def test_parse_sequent_surface_sugar() -> None:
+    assert parse_surface("p -> q, r -> p, r |- q") == SImp(
+        SImp(SAtom("p"), SAtom("q")),
+        SImp(SImp(SAtom("r"), SAtom("p")), SImp(SAtom("r"), SAtom("q"))),
+    )
+
+
+def test_parse_unicode_turnstile_surface_sugar() -> None:
+    assert parse_surface("a, b ⊢ c") == SImp(SAtom("a"), SImp(SAtom("b"), SAtom("c")))
+
+
 def test_parse_parentheses_override_precedence() -> None:
     assert parse_surface("(a -> b) -> c") == SImp(SImp(SAtom("a"), SAtom("b")), SAtom("c"))
 

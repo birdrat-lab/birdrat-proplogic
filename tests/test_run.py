@@ -45,7 +45,7 @@ def test_render_search_report_mentions_best_candidate_and_proof() -> None:
     report = run_search(conjunction_commutativity_target(), small_config(), seed=1)
     output = render_search_report(report)
 
-    assert "surface target:\n  a ∧ b → b ∧ a" in output
+    assert "surface target:\n  assumptions:\n    1. a ∧ b\n  conclusion:\n    b ∧ a" in output
     assert "active depth:" in output
     assert "diagnostics:" in output
     assert "valid=" in output

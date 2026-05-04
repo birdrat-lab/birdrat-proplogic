@@ -14,6 +14,9 @@ ParseResult = SurfaceFormula | ParseError
 
 
 def parse_surface(text: str) -> ParseResult:
+    sequent = _parse_sequent_surface(text)
+    if sequent is not None:
+        return sequent
     tokens = _tokenize(text)
     if isinstance(tokens, ParseError):
         return tokens
@@ -23,6 +26,29 @@ def parse_surface(text: str) -> ParseResult:
         return formula
     if parser.current() is not None:
         return ParseError(f"unexpected token: {parser.current()}")
+    return formula
+
+
+def _parse_sequent_surface(text: str) -> ParseResult | None:
+    split = _split_top_level_turnstile(text)
+    if split is None:
+        return None
+    left, right = split
+    assumption_texts = _split_top_level_commas(left)
+    if not assumption_texts:
+        return ParseError("expected at least one assumption before turnstile")
+    assumptions: list[SurfaceFormula] = []
+    for item in assumption_texts:
+        parsed = parse_surface(item)
+        if isinstance(parsed, ParseError):
+            return parsed
+        assumptions.append(parsed)
+    conclusion = parse_surface(right)
+    if isinstance(conclusion, ParseError):
+        return conclusion
+    formula = conclusion
+    for assumption in reversed(assumptions):
+        formula = SImp(assumption, formula)
     return formula
 
 
@@ -75,6 +101,44 @@ def _tokenize(text: str) -> tuple[str, ...] | ParseError:
 
         return ParseError(f"unexpected character: {char}")
     return tuple(tokens)
+
+
+def _split_top_level_turnstile(text: str) -> tuple[str, str] | None:
+    depth = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+            continue
+        if char == ")":
+            depth -= 1
+            continue
+        if depth != 0:
+            continue
+        if text.startswith("|-", index):
+            return (text[:index].strip(), text[index + 2 :].strip())
+        if char == "⊢":
+            return (text[:index].strip(), text[index + 1 :].strip())
+    return None
+
+
+def _split_top_level_commas(text: str) -> tuple[str, ...]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            part = text[start:index].strip()
+            if part:
+                parts.append(part)
+            start = index + 1
+    final = text[start:].strip()
+    if final:
+        parts.append(final)
+    return tuple(parts)
 
 
 def _normalize_token(token: str) -> str:

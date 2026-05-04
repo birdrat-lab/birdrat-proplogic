@@ -5,13 +5,15 @@ from dataclasses import dataclass, replace
 
 from birdrat_proplogic.archive import archive_size
 from birdrat_proplogic.config import ArchiveConfig, EvolutionConfig, ProplogicConfig
-from birdrat_proplogic.evolution import EvolutionResult, evolve
+from birdrat_proplogic.evolution import EvolutionResult, GenerationStats, evolve
 from birdrat_proplogic.formula import pretty
 from birdrat_proplogic.goals import Goal
 from birdrat_proplogic.parse import ParseError, parse_surface
 from birdrat_proplogic.proof import Invalid, proof_pretty
+from birdrat_proplogic.profiling import RuntimeProfiler, compact_runtime_summary
+from birdrat_proplogic.reporting import timestamp, write_report
 from birdrat_proplogic.search import SearchResult, search_with_fallback
-from birdrat_proplogic.surface import SAnd, SAtom, SImp, SurfaceFormula, desugar, surface_pretty
+from birdrat_proplogic.surface import SAnd, SAtom, SImp, SurfaceFormula, desugar, surface_display, surface_pretty, surface_sequent_pretty
 
 
 @dataclass(frozen=True)
@@ -30,8 +32,16 @@ def run_search(
     theorem: SurfaceFormula,
     config: ProplogicConfig,
     seed: int | None = None,
+    progress_callback=None,
+    profiler: RuntimeProfiler | None = None,
 ) -> SearchReport:
-    search_result = search_with_fallback(theorem, config=config, seed=seed)
+    search_result = search_with_fallback(
+        theorem,
+        config=config,
+        seed=seed,
+        progress_callback=progress_callback,
+        profiler=profiler,
+    )
     return SearchReport(result=search_result.result, search_result=search_result)
 
 
@@ -48,7 +58,7 @@ def render_search_report(report: SearchReport) -> str:
 
     lines = [
         "surface target:",
-        f"  {surface_pretty(result.target)}",
+        *[f"  {line}" for line in surface_display(result.target).splitlines()],
         "",
         "core target:",
         f"  {pretty(desugar(result.target))}",
@@ -121,20 +131,144 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-load-archive", action="store_true")
     parser.add_argument("--no-save-archive", action="store_true")
     parser.add_argument("--keep-going", action="store_true", help="continue through max generations after exact success")
+    parser.add_argument("--progress-interval", type=int, default=10)
+    parser.add_argument("--report-dir", default="reports/runs")
+    parser.add_argument("--report-format", choices=("json", "md", "both"), default="json")
+    parser.add_argument("--no-report", action="store_true")
+    parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    parsed = parse_surface(args.theorem)
+    profiler = RuntimeProfiler(enabled=True)
+    with profiler.section("parse_surface"):
+        parsed = parse_surface(args.theorem)
     if isinstance(parsed, ParseError):
         parser.error(parsed.message)
 
     config = _config_from_args(args)
-    report = run_search(parsed, config, args.seed)
-    print(render_search_report(report))
+    if not args.quiet:
+        print(f"target: {surface_sequent_pretty(parsed)}")
+        print(f"core target: {pretty(desugar(parsed))}")
+    report = run_search(
+        parsed,
+        config,
+        args.seed,
+        progress_callback=_progress_printer(args.progress_interval, args.quiet),
+        profiler=profiler,
+    )
+    search = report.search_result
+    assert search is not None
+    if args.verbose:
+        print(render_search_report(report))
+    else:
+        print(render_compact_search_summary(report))
+    if args.profile and not args.quiet:
+        _print_runtime_summary(search)
+    if not args.no_report:
+        with profiler.section("report_writing"):
+            paths = write_report(
+                _run_report_payload(report, args.seed, config),
+                report_dir=args.report_dir,
+                stem=f"run-{timestamp()}",
+                report_format=args.report_format,
+            )
+        if not args.quiet:
+            print(f"full report: {', '.join(str(path) for path in paths)}")
     return 0
+
+
+def render_compact_search_summary(report: SearchReport) -> str:
+    search = report.search_result
+    result = report.result
+    best = result.best.fitness
+    lines = [
+        "",
+        "summary:",
+        f"  found: {'yes' if search and search.found else 'no'}",
+        f"  phase: {search.solved_in_phase if search and search.solved_in_phase else 'none'}",
+        f"  best similarity: {best.target_similarity:.3f}",
+        f"  cd: {best.cd_steps}",
+        f"  depth: {best.cd_depth}",
+        f"  size: {best.proof_size}",
+        f"  runtime: {search.total_runtime_seconds:.3f}s" if search else "  runtime: n/a",
+    ]
+    if not best.exact_target:
+        conclusion = best.conclusion
+        lines.append(f"  best conclusion: {'invalid' if isinstance(conclusion, Invalid) else pretty(conclusion)}")
+    return "\n".join(lines)
+
+
+def _progress_printer(interval: int, quiet: bool):
+    interval = max(1, interval)
+    printed: set[tuple[str, int]] = set()
+
+    def callback(phase: str, stats: GenerationStats, elapsed: float) -> None:
+        if quiet:
+            return
+        should_print = stats.generation == 0 or stats.best_exact or stats.generation % interval == 0
+        if not should_print or (phase, stats.generation) in printed:
+            return
+        printed.add((phase, stats.generation))
+        if stats.best_exact:
+            print(
+                f"gen {stats.generation}: phase={phase} FOUND exact proof "
+                f"cd={stats.mean_cd_steps:.1f} depth={stats.active_proof_depth} time={elapsed:.1f}s"
+            )
+            return
+        print(
+            f"gen {stats.generation}: phase={phase} best={stats.best_score:.1f} "
+            f"sim={stats.best_target_similarity:.2f} exact={stats.exact_target_count} valid={stats.valid_fraction:.2f} "
+            f"closed={stats.closed_fraction:.2f} beam={stats.beam_valid_products} time={elapsed:.1f}s"
+        )
+
+    return callback
+
+
+def _print_runtime_summary(search: SearchResult) -> None:
+    lines = compact_runtime_summary(search.runtime_profile)
+    if not lines:
+        return
+    print("runtime summary:")
+    print("\n".join(lines))
+
+
+def _run_report_payload(report: SearchReport, seed: int | None, config: ProplogicConfig) -> dict:
+    search = report.search_result
+    result = report.result
+    best = result.best
+    return {
+        "title": "birdrat-proplogic run",
+        "summary": {
+            "surface_target": surface_pretty(result.target),
+            "surface_sequent": surface_sequent_pretty(result.target),
+            "surface_display": surface_display(result.target),
+            "core_target": pretty(desugar(result.target)),
+            "found": search.found if search else False,
+            "solved_in_phase": search.solved_in_phase if search else None,
+            "runtime_seconds": search.total_runtime_seconds if search else None,
+            "best_score": best.fitness.score,
+            "target_similarity": best.fitness.target_similarity,
+            "cd_steps": best.fitness.cd_steps,
+            "cd_depth": best.fitness.cd_depth,
+            "proof_size": best.fitness.proof_size,
+        },
+        "seed": seed,
+        "config": config,
+        "target": result.target,
+        "target_display": surface_display(result.target),
+        "core_target": desugar(result.target),
+        "regions": tuple(region.theorem() for region in result.regions),
+        "search_result": search,
+        "history": result.history,
+        "beam_diagnostics": result.beam_diagnostics,
+        "best_proof": proof_pretty(best.proof),
+        "runtime_profile": search.runtime_profile if search else None,
+    }
 
 
 def _config_from_args(args: argparse.Namespace) -> ProplogicConfig:

@@ -7,9 +7,12 @@ from birdrat_proplogic.benchmarks import SearchBenchmark, regression_benchmarks,
 from birdrat_proplogic.fitness import total_fitness
 from birdrat_proplogic.formula import is_closed_formula, pretty
 from birdrat_proplogic.proof import Invalid
+from birdrat_proplogic.proof import proof_pretty
+from birdrat_proplogic.profiling import RuntimeProfile, RuntimeProfiler, compact_runtime_summary
 from birdrat_proplogic.quality import behavior_descriptor, novelty_score
+from birdrat_proplogic.reporting import timestamp, write_report
 from birdrat_proplogic.search import PhaseReport, search_with_fallback
-from birdrat_proplogic.surface import desugar, surface_pretty
+from birdrat_proplogic.surface import desugar, surface_display, surface_pretty, surface_sequent_pretty
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -23,6 +26,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--beam-major-budget", type=int)
     parser.add_argument("--beam-pair-budget", type=int)
     parser.add_argument("--keep-going", action="store_true")
+    parser.add_argument("--progress-interval", type=int, default=10)
+    parser.add_argument("--report-dir", default="reports/benchmarks")
+    parser.add_argument("--report-format", choices=("json", "md", "both"), default="json")
+    parser.add_argument("--no-report", action="store_true")
+    parser.add_argument("--profile", action="store_true", default=True)
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
     return parser
 
 
@@ -32,15 +42,61 @@ def main(argv: list[str] | None = None) -> int:
 
     suite = small_target_benchmarks() if args.small_targets else regression_benchmarks()
     benchmarks = tuple(_override_config(benchmark, args) for benchmark in suite)
+    suite_name = "small-targets" if args.small_targets else "regression"
+    results = []
     for index, benchmark in enumerate(benchmarks):
-        if index:
-            print()
-        print(render_benchmark_result(benchmark, args.seed))
+        if not args.quiet:
+            if index:
+                print()
+                print()
+            print(f"[{index + 1}/{len(benchmarks)}] {benchmark.name}")
+            print("  proving:")
+            for line in surface_display(benchmark.target).splitlines():
+                print(f"    {line}")
+            print(f"  core: {pretty(desugar(benchmark.target))}")
+        profiler = RuntimeProfiler(enabled=True)
+        search = search_with_fallback(
+            benchmark.target,
+            benchmark.config,
+            seed=args.seed,
+            profiler=profiler,
+            progress_callback=_benchmark_progress_printer(args.progress_interval, args.quiet),
+        )
+        results.append((benchmark, search))
+        if args.verbose:
+            print(render_benchmark_search_result(benchmark, search))
+        elif not args.quiet:
+            print(f"  {_benchmark_status_line(search)}")
+    if not args.quiet:
+        print()
+        print(_summary_table(results))
+        if args.profile:
+            profile_lines = _aggregate_runtime_summary(results)
+            if profile_lines:
+                print()
+                print("runtime summary:")
+                print("\n".join(profile_lines))
+    report_paths = ()
+    if not args.no_report:
+        profiler = RuntimeProfiler(enabled=True)
+        with profiler.section("report_writing"):
+            report_paths = write_report(
+                _benchmark_report_payload(suite_name, results, args.seed),
+                report_dir=args.report_dir,
+                stem=f"{suite_name}-{timestamp()}",
+                report_format=args.report_format,
+            )
+        if not args.quiet:
+            print(f"full report: {', '.join(str(path) for path in report_paths)}")
     return 0
 
 
 def render_benchmark_result(benchmark: SearchBenchmark, seed: int | None = None) -> str:
     search = search_with_fallback(benchmark.target, benchmark.config, seed=seed)
+    return render_benchmark_search_result(benchmark, search)
+
+
+def render_benchmark_search_result(benchmark: SearchBenchmark, search) -> str:
     result = search.result
     best = result.best.fitness
     final_scored = tuple(
@@ -53,7 +109,9 @@ def render_benchmark_result(benchmark: SearchBenchmark, seed: int | None = None)
     diagnostics = result.beam_diagnostics
     lines = [
         f"name: {benchmark.name}",
-        f"target: {surface_pretty(benchmark.target)}",
+        f"target: {surface_sequent_pretty(benchmark.target)}",
+        "target display:",
+        *[f"  {line}" for line in surface_display(benchmark.target).splitlines()],
         f"core target: {pretty(desugar(benchmark.target))}",
         f"expected status: {benchmark.expected_status}",
         f"found exact proof: {search.found}",
@@ -82,6 +140,114 @@ def render_benchmark_result(benchmark: SearchBenchmark, seed: int | None = None)
         *_phase_lines(search.phase_reports),
     ]
     return "\n".join(lines)
+
+
+def _benchmark_status_line(search) -> str:
+    best = search.result.best.fitness
+    if search.found:
+        return (
+            f"{search.solved_in_phase}: FOUND cd={best.cd_steps} "
+            f"depth={best.cd_depth} size={best.proof_size} time={search.total_runtime_seconds:.1f}s"
+        )
+    return (
+        f"not found phase=none best_sim={best.target_similarity:.2f} "
+        f"time={search.total_runtime_seconds:.1f}s"
+    )
+
+
+def _benchmark_progress_printer(interval: int, quiet: bool):
+    interval = max(1, interval)
+    printed: set[tuple[str, int]] = set()
+
+    def callback(phase: str, stats, elapsed: float) -> None:
+        if quiet:
+            return
+        should_print = stats.generation == 0 or stats.best_exact or stats.generation % interval == 0
+        if not should_print or (phase, stats.generation) in printed:
+            return
+        printed.add((phase, stats.generation))
+        if stats.best_exact:
+            print(
+                f"  gen {stats.generation}: {phase} FOUND "
+                f"best={stats.best_score:.1f} sim={stats.best_target_similarity:.2f} "
+                f"exact={stats.exact_target_count} beam={stats.beam_valid_products} time={elapsed:.1f}s"
+            )
+            return
+        print(
+            f"  gen {stats.generation}: {phase} "
+            f"best={stats.best_score:.1f} sim={stats.best_target_similarity:.2f} "
+            f"exact={stats.exact_target_count} valid={stats.valid_fraction:.2f} "
+            f"closed={stats.closed_fraction:.2f} beam={stats.beam_valid_products} time={elapsed:.1f}s"
+        )
+
+    return callback
+
+
+def _summary_table(results) -> str:
+    lines = [
+        "summary",
+        f"{'name':25} {'found':5} {'phase':18} {'cd':>3} {'depth':>5} {'size':>5} {'runtime':>8}",
+    ]
+    for benchmark, search in results:
+        best = search.result.best.fitness
+        found = "yes" if search.found else "no"
+        phase = search.solved_in_phase or "none"
+        cd = str(best.cd_steps) if search.found else "-"
+        depth = str(best.cd_depth) if search.found else "-"
+        size = str(best.proof_size) if search.found else "-"
+        lines.append(
+            f"{benchmark.name:25} {found:5} {phase:18} {cd:>3} {depth:>5} {size:>5} {search.total_runtime_seconds:>7.1f}s"
+        )
+        if not search.found:
+            lines.append(f"  best similarity: {best.target_similarity:.3f}")
+    return "\n".join(lines)
+
+
+def _benchmark_report_payload(suite_name: str, results, seed: int | None) -> dict:
+    return {
+        "title": f"birdrat-proplogic benchmark: {suite_name}",
+        "summary": [
+            {
+                "name": benchmark.name,
+                "found": search.found,
+                "solved_in_phase": search.solved_in_phase,
+                "runtime_seconds": search.total_runtime_seconds,
+                "cd_steps": search.result.best.fitness.cd_steps,
+                "cd_depth": search.result.best.fitness.cd_depth,
+                "proof_size": search.result.best.fitness.proof_size,
+                "target_similarity": search.result.best.fitness.target_similarity,
+            }
+            for benchmark, search in results
+        ],
+        "suite": suite_name,
+        "seed": seed,
+        "results": [
+            {
+                "benchmark": benchmark,
+                "surface_target": surface_pretty(benchmark.target),
+                "surface_sequent": surface_sequent_pretty(benchmark.target),
+                "surface_display": surface_display(benchmark.target),
+                "core_target": pretty(desugar(benchmark.target)),
+                "search_result": search,
+                "history": search.result.history,
+                "beam_diagnostics": search.result.beam_diagnostics,
+                "best_proof": proof_pretty(search.result.best.proof),
+                "runtime_profile": search.runtime_profile,
+            }
+            for benchmark, search in results
+        ],
+    }
+
+
+def _aggregate_runtime_summary(results) -> list[str]:
+    sections: dict[str, float] = {}
+    counters: dict[str, int] = {}
+    for _benchmark, search in results:
+        for key, value in search.runtime_profile.sections.items():
+            sections[key] = sections.get(key, 0.0) + value
+        for key, value in search.runtime_profile.counters.items():
+            counters[key] = counters.get(key, 0) + value
+    return compact_runtime_summary(RuntimeProfile(sections=sections, counters=counters))
 
 
 def _override_config(benchmark: SearchBenchmark, args: argparse.Namespace) -> SearchBenchmark:

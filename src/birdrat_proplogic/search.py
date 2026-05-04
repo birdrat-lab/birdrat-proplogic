@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from math import ceil
 from time import perf_counter
+from typing import Callable
 
 from birdrat_proplogic.config import ProplogicConfig
-from birdrat_proplogic.evolution import EvolutionResult, evolve
+from birdrat_proplogic.evolution import EvolutionResult, GenerationStats, evolve
 from birdrat_proplogic.fitness import FitnessResult, total_fitness
 from birdrat_proplogic.formula import is_closed_formula
 from birdrat_proplogic.proof import Invalid, Proof
+from birdrat_proplogic.profiling import RuntimeProfile, RuntimeProfiler
 from birdrat_proplogic.quality import behavior_descriptor, novelty_score
 from birdrat_proplogic.surface import SurfaceFormula, desugar
 
@@ -56,6 +58,7 @@ class SearchResult:
     best_novelty_candidate: Proof | None
     total_runtime_seconds: float
     result: EvolutionResult
+    runtime_profile: RuntimeProfile
 
 
 def make_default_search_phases(base_config: ProplogicConfig) -> tuple[SearchPhase, ...]:
@@ -101,20 +104,37 @@ def search_with_fallback(
     target: SurfaceFormula,
     config: ProplogicConfig,
     seed: int | None = None,
+    progress_callback: Callable[[str, GenerationStats, float], None] | None = None,
+    profiler: RuntimeProfiler | None = None,
 ) -> SearchResult:
     started = perf_counter()
+    profiler = profiler or RuntimeProfiler(enabled=False)
     reports: list[PhaseReport] = []
     for index, phase in enumerate(make_default_search_phases(config)):
         phase_seed = None if seed is None else seed + index * 1_000_003
         phase_config = _config_for_phase(config, phase)
         phase_started = perf_counter()
-        result = evolve(target, phase_config, seed=phase_seed)
+        result = evolve(
+            target,
+            phase_config,
+            seed=phase_seed,
+            progress_callback=(
+                None
+                if progress_callback is None
+                else lambda stats, elapsed, phase_name=phase.name: progress_callback(phase_name, stats, elapsed)
+            ),
+            profiler=profiler,
+        )
         runtime = perf_counter() - phase_started
         report = _phase_report(phase.name, result, phase_config, runtime)
         reports.append(report)
         if report.found_exact:
-            return _search_result(tuple(reports), perf_counter() - started)
-    return _search_result(tuple(reports), perf_counter() - started)
+            runtime_total = perf_counter() - started
+            profiler.add_time("total", runtime_total)
+            return _search_result(tuple(reports), runtime_total, profiler.snapshot())
+    runtime_total = perf_counter() - started
+    profiler.add_time("total", runtime_total)
+    return _search_result(tuple(reports), runtime_total, profiler.snapshot())
 
 
 def _config_for_phase(config: ProplogicConfig, phase: SearchPhase) -> ProplogicConfig:
@@ -172,7 +192,7 @@ def _phase_report(
     )
 
 
-def _search_result(reports: tuple[PhaseReport, ...], runtime_seconds: float) -> SearchResult:
+def _search_result(reports: tuple[PhaseReport, ...], runtime_seconds: float, runtime_profile: RuntimeProfile) -> SearchResult:
     solved = next((report for report in reports if report.found_exact), None)
     final_report = solved if solved is not None else max(reports, key=lambda report: report.best_score)
     return SearchResult(
@@ -185,6 +205,7 @@ def _search_result(reports: tuple[PhaseReport, ...], runtime_seconds: float) -> 
         best_novelty_candidate=_best_report_candidate(reports, "best_novelty_candidate"),
         total_runtime_seconds=runtime_seconds,
         result=final_report.result,
+        runtime_profile=runtime_profile,
     )
 
 
