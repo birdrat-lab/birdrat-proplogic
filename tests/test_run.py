@@ -19,6 +19,9 @@ def small_config() -> ProplogicConfig:
             max_generations=2,
             elite_count=1,
             tournament_size=2,
+            beam_width=6,
+            beam_max_depth=1,
+            beam_pair_budget=20,
         ),
     )
 

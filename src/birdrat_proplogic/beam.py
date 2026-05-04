@@ -291,6 +291,51 @@ def prioritized_candidate_pairs(
     major_budget: int,
     pair_budget: int,
 ) -> tuple[tuple[tuple[float, Proof, Proof], ...], int]:
+    budgets = _channel_budgets(
+        pair_budget,
+        config.evolution.beam_prioritized_fraction,
+        config.evolution.beam_suffix_fraction,
+        config.evolution.beam_exploratory_fraction,
+    )
+    strict_pairs, compatible_count = _prioritized_pairs(
+        proof_pool,
+        target,
+        regions,
+        config,
+        major_budget=major_budget,
+        pair_budget=budgets[0],
+    )
+    suffix_pairs, suffix_compatible = _suffix_pairs(
+        proof_pool,
+        target,
+        regions,
+        config,
+        major_budget=major_budget,
+        pair_budget=budgets[1],
+    )
+    exploratory_pairs, exploratory_compatible = _exploratory_pairs(
+        proof_pool,
+        target,
+        regions,
+        config,
+        major_budget=major_budget,
+        pair_budget=budgets[2],
+    )
+    return (
+        _dedupe_ranked_pairs(strict_pairs + suffix_pairs + exploratory_pairs, pair_budget),
+        compatible_count + suffix_compatible + exploratory_compatible,
+    )
+
+
+def _prioritized_pairs(
+    proof_pool: tuple[Proof, ...],
+    target: Formula,
+    regions: tuple[Goal, ...],
+    config: ProplogicConfig,
+    *,
+    major_budget: int,
+    pair_budget: int,
+) -> tuple[tuple[tuple[float, Proof, Proof], ...], int]:
     index = build_minor_shape_index(proof_pool)
     majors = sorted(
         (proof for proof in proof_pool if implication_major_parts(proof) is not None),
@@ -316,6 +361,130 @@ def prioritized_candidate_pairs(
     if pair_budget <= 0:
         return ((), compatible_count)
     return (tuple(ranked[:pair_budget]), compatible_count)
+
+
+def _suffix_pairs(
+    proof_pool: tuple[Proof, ...],
+    target: Formula,
+    regions: tuple[Goal, ...],
+    config: ProplogicConfig,
+    *,
+    major_budget: int,
+    pair_budget: int,
+) -> tuple[tuple[tuple[float, Proof, Proof], ...], int]:
+    if pair_budget <= 0:
+        return ((), 0)
+    suffixes = target_and_region_suffixes(target, regions)
+    if not suffixes:
+        return ((), 0)
+    per_suffix = max(1, pair_budget // len(suffixes))
+    output: list[tuple[float, Proof, Proof]] = []
+    compatible_total = 0
+    for suffix in suffixes:
+        pairs, compatible = _prioritized_pairs(
+            proof_pool,
+            suffix,
+            (),
+            config,
+            major_budget=major_budget,
+            pair_budget=per_suffix,
+        )
+        compatible_total += compatible
+        output.extend(pairs)
+    return (_dedupe_ranked_pairs(tuple(output), pair_budget), compatible_total)
+
+
+def _exploratory_pairs(
+    proof_pool: tuple[Proof, ...],
+    target: Formula,
+    regions: tuple[Goal, ...],
+    config: ProplogicConfig,
+    *,
+    major_budget: int,
+    pair_budget: int,
+) -> tuple[tuple[tuple[float, Proof, Proof], ...], int]:
+    if pair_budget <= 0:
+        return ((), 0)
+    index = build_minor_shape_index(proof_pool)
+    majors = sorted(
+        (proof for proof in proof_pool if implication_major_parts(proof) is not None),
+        key=lambda proof: (cd_steps(proof), proof_size(proof), total_formula_size(proof)),
+    )[:major_budget]
+    pairs: list[tuple[float, Proof, Proof]] = []
+    compatible_count = 0
+    for major in majors:
+        parts = implication_major_parts(major)
+        if parts is None:
+            continue
+        antecedent, _ = parts
+        minors = tuple(compatible_minor_candidates(antecedent, proof_pool, index))
+        compatible_count += len(minors)
+        for minor in minors:
+            priority = exploratory_pair_priority(major, minor, config)
+            if not isfinite(priority):
+                continue
+            pairs.append((priority, major, minor))
+    return (_dedupe_ranked_pairs(tuple(pairs), pair_budget), compatible_count)
+
+
+def exploratory_pair_priority(major: Proof, minor: Proof, config: ProplogicConfig) -> float:
+    parts = implication_major_parts(major)
+    if parts is None:
+        return float("-inf")
+    antecedent, _ = parts
+    minor_conclusion = conclusion(minor)
+    if isinstance(minor_conclusion, Invalid):
+        return float("-inf")
+    subst = unify(antecedent, minor_conclusion)
+    if isinstance(subst, UnifyFailure):
+        return float("-inf")
+    evolution_config = config.evolution
+    return -(
+        evolution_config.beam_major_proof_size_penalty * proof_size(major)
+        + evolution_config.beam_major_cd_step_penalty * cd_steps(major)
+        + evolution_config.beam_major_formula_size_penalty * total_formula_size(major)
+        + evolution_config.beam_minor_proof_size_penalty * proof_size(minor)
+        + evolution_config.beam_substitution_size_penalty * substitution_size(subst)
+    )
+
+
+def _channel_budgets(
+    total: int,
+    prioritized_fraction: float,
+    suffix_fraction: float,
+    exploratory_fraction: float,
+) -> tuple[int, int, int]:
+    if total <= 0:
+        return (0, 0, 0)
+    fractions = [max(0.0, prioritized_fraction), max(0.0, suffix_fraction), max(0.0, exploratory_fraction)]
+    fraction_sum = sum(fractions)
+    if fraction_sum <= 0:
+        fractions = [1.0, 0.0, 0.0]
+        fraction_sum = 1.0
+    fractions = [item / fraction_sum for item in fractions]
+    prioritized = int(total * fractions[0])
+    suffix = int(total * fractions[1])
+    exploratory = total - prioritized - suffix
+    return (prioritized, suffix, exploratory)
+
+
+def _dedupe_ranked_pairs(
+    pairs: tuple[tuple[float, Proof, Proof], ...],
+    limit: int,
+) -> tuple[tuple[float, Proof, Proof], ...]:
+    if limit <= 0:
+        return ()
+    selected: list[tuple[float, Proof, Proof]] = []
+    seen: set[tuple[Proof, Proof]] = set()
+    for priority, major, minor in sorted(pairs, key=lambda item: item[0], reverse=True):
+        key = (major, minor)
+        if key in seen:
+            continue
+        selected.append((priority, major, minor))
+        seen.add(key)
+        if len(selected) >= limit:
+            break
+    return tuple(selected)
 
 
 def build_minor_shape_index(proof_pool: tuple[Proof, ...]) -> dict[str, tuple[Proof, ...]]:
@@ -388,14 +557,17 @@ def suffix_priority(candidate: Formula, target: Formula, regions: tuple[Goal, ..
 def seeded_axiom_instances(formula_pool: tuple[Formula, ...], width: int) -> tuple[Proof, ...]:
     proofs: list[Proof] = []
     leaf_index = 0
-    for _ in range(max(3, width // 3)):
+    fresh_limit = max(3, width // 2)
+    for _ in range(max(1, fresh_limit // 3 + 1)):
         for axiom_number in ("1", "2", "3"):
+            if len(proofs) >= fresh_limit:
+                break
             leaf_index += 1
             proof = fresh_axiom(axiom_number, leaf_index)
             if not isinstance(proof, DProofParseError):
                 proofs.append(proof)
-            if len(proofs) >= width:
-                return tuple(_dedupe(proofs))
+        if len(proofs) >= fresh_limit:
+            break
 
     limited_pool = formula_pool[: max(1, min(len(formula_pool), width))]
     for left in limited_pool:
@@ -465,6 +637,18 @@ def _rank_schematic(
     selected: list[Proof] = []
     seen_skeletons: set[str] = set()
     for proof in ranked:
+        proof_conclusion = conclusion(proof)
+        if isinstance(proof_conclusion, Invalid):
+            continue
+        if not _unifies_with_any(proof_conclusion, target_and_region_suffixes(target, regions)):
+            continue
+        selected.append(proof)
+        seen_skeletons.add(behavior_descriptor(proof).normalized_skeleton)
+        if len(selected) >= max(1, width // 4):
+            break
+    for proof in ranked:
+        if proof in selected:
+            continue
         descriptor = behavior_descriptor(proof)
         if descriptor.normalized_skeleton in seen_skeletons:
             continue

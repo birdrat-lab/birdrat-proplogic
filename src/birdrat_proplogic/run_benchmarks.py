@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
-from time import perf_counter
 
 from birdrat_proplogic.benchmarks import SearchBenchmark, small_target_benchmarks
-from birdrat_proplogic.evolution import evolve
 from birdrat_proplogic.fitness import total_fitness
 from birdrat_proplogic.formula import is_closed_formula, pretty
 from birdrat_proplogic.proof import Invalid
 from birdrat_proplogic.quality import behavior_descriptor, novelty_score
+from birdrat_proplogic.search import PhaseReport, search_with_fallback
 from birdrat_proplogic.surface import desugar, surface_pretty
 
 
@@ -42,9 +41,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def render_benchmark_result(benchmark: SearchBenchmark, seed: int | None = None) -> str:
-    started = perf_counter()
-    result = evolve(benchmark.target, benchmark.config, seed=seed)
-    runtime = perf_counter() - started
+    search = search_with_fallback(benchmark.target, benchmark.config, seed=seed)
+    result = search.result
     best = result.best.fitness
     final_scored = tuple(
         total_fitness(proof, desugar(benchmark.target), result.regions, benchmark.config)
@@ -59,7 +57,8 @@ def render_benchmark_result(benchmark: SearchBenchmark, seed: int | None = None)
         f"target: {surface_pretty(benchmark.target)}",
         f"core target: {pretty(desugar(benchmark.target))}",
         f"expected status: {benchmark.expected_status}",
-        f"found exact proof: {best.exact_target}",
+        f"found exact proof: {search.found}",
+        f"solved in phase: {search.solved_in_phase or 'none'}",
         f"best closed candidate: {_candidate_text(best_closed)}",
         f"best schematic candidate: {_candidate_text(best_schema)}",
         f"best novelty candidate: {_candidate_text(best_novelty)}",
@@ -69,7 +68,7 @@ def render_benchmark_result(benchmark: SearchBenchmark, seed: int | None = None)
         f"proof CD depth: {best.cd_depth}",
         f"proof size: {best.proof_size}",
         f"formula size: {best.formula_size}",
-        f"runtime: {runtime:.3f}s",
+        f"total runtime: {search.total_runtime_seconds:.3f}s",
         f"beam width: {benchmark.config.evolution.beam_width}",
         f"beam max depth: {benchmark.config.evolution.beam_max_depth}",
         f"beam pair budget: {diagnostics.pair_budget}",
@@ -80,6 +79,8 @@ def render_benchmark_result(benchmark: SearchBenchmark, seed: int | None = None)
         f"population size: {benchmark.config.evolution.population_size}",
         f"generations: {len(result.history)}",
         f"notes: {benchmark.notes}",
+        "phase results:",
+        *_phase_lines(search.phase_reports),
     ]
     return "\n".join(lines)
 
@@ -153,6 +154,44 @@ def _beam_layer_text(layers: tuple[str, ...]) -> str:
     if not layers:
         return "none"
     return " | ".join(layers)
+
+
+def _phase_lines(reports: tuple[PhaseReport, ...]) -> list[str]:
+    lines: list[str] = []
+    for report in reports:
+        lines.extend(
+            [
+                f"  {report.phase_name}:",
+                f"    found: {report.found_exact}",
+                f"    best closed: {_proof_text(report.best_closed_candidate, report)}",
+                f"    best schematic: {_proof_text(report.best_schematic_candidate, report)}",
+                f"    best novelty: {_proof_text(report.best_novelty_candidate, report)}",
+                f"    runtime: {report.runtime_seconds:.3f}s",
+                f"    beam pair attempts: {report.beam_pair_attempts}",
+                f"    beam valid products: {report.beam_valid_products}",
+                f"    beam layer counts: {_raw_beam_layer_text(report.beam_layer_counts)}",
+            ]
+        )
+    return lines
+
+
+def _proof_text(proof, report: PhaseReport) -> str:
+    if proof is None:
+        return "none"
+    fitness = total_fitness(proof, desugar(report.result.target), report.result.regions)
+    return _candidate_text(fitness)
+
+
+def _raw_beam_layer_text(layers: tuple) -> str:
+    if not layers:
+        return "none"
+    return " | ".join(
+        (
+            f"d{layer.depth}:attempts={layer.pair_attempts},valid={layer.valid_products},"
+            f"closed={layer.closed_products},schematic={layer.schematic_products}"
+        )
+        for layer in layers
+    )
 
 
 if __name__ == "__main__":

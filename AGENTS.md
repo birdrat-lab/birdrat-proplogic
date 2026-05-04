@@ -1,4 +1,4 @@
-# AGENTS.md — birdrat-proplogic: Neutral Beam Heuristics, Benchmark Search, and Diagnostics
+# AGENTS.md — birdrat-proplogic: Default Cascading Beam Search
 
 ## Project purpose
 
@@ -104,7 +104,7 @@ This is a nontrivial theorem in the `P₂ + CD` system. Do not treat surface con
 
 ---
 
-## Important benchmark policy
+## Benchmark policy
 
 Do **not** hardcode known proofs.
 
@@ -114,7 +114,7 @@ Do **not** seed the search with external proof strings.
 
 The benchmark suite should consist of theorem targets only. The search system must attempt to find proofs of those targets using the internal proof-search machinery.
 
-It is acceptable that benchmark targets were selected because they are externally known to have short `P₂ + CD` proofs. But the implementation should not use the known proofs during search, scoring, initialization, benchmarking, or verification.
+It is acceptable that benchmark targets were selected because they are externally known to have short `P₂ + CD` proofs. But the implementation should not use known proofs during search, scoring, initialization, benchmarking, or verification.
 
 The benchmark question is:
 
@@ -132,9 +132,9 @@ Can the tool replay a known proof?
 
 ## Current benchmark status
 
-The small target benchmark suite has become useful.
+The small target benchmark suite is the current calibration set.
 
-Current target suite:
+Targets:
 
 ```text
 1. identity:
@@ -157,13 +157,13 @@ Current interpretation:
 
 ```text
 - identity is solvable
-- syllogism is solvable
 - contraction is solvable
+- syllogism was previously solvable but regressed after strict pair preselection
 - classical-negation remains unsolved
 - distribution/application remains unsolved
 ```
 
-This is good progress. The failures are informative and should be treated as search diagnostics, not as reasons to add proof-specific hacks.
+The regression on syllogism is the immediate motivation for the cascading search policy.
 
 Do not return to encoded conjunction benchmarks such as:
 
@@ -177,125 +177,11 @@ until the small target suite is reliable.
 
 ---
 
-## Neutrality requirement for heuristics
+## Problem: strict preselected beam is brittle
 
-Do not seed the beam heuristic with proof ideas tied to a specific axiom.
+The beam now uses target-directed pair preselection. This is necessary because trying all ordered CD pairs is too slow.
 
-In particular, do **not** implement rules such as:
-
-```text
-if the target contains negation, boost Ax3
-if the target looks classical, prefer Ax3-containing candidates
-if the target is implicational, prefer Ax1/Ax2
-```
-
-This would encode proof strategy knowledge into the heuristic and would weaken the experiment.
-
-The beam heuristic should be target-formula driven, not axiom-family driven.
-
-Acceptable heuristic signals:
-
-```text
-- consequent of a CD major matches or unifies with the target
-- consequent of a CD major matches or unifies with a target implication suffix
-- candidate conclusion has a useful implication spine
-- candidate covers target antecedents
-- candidate has low assumption debt
-- candidate is closed when the target is closed
-- schematic candidate can be instantiated toward the target
-- proof is smaller or has fewer CD steps
-- formula size is controlled
-```
-
-Unacceptable heuristic signals:
-
-```text
-- explicit bonus for using Ax1
-- explicit bonus for using Ax2
-- explicit bonus for using Ax3
-- target-specific axiom preferences
-- benchmark-specific proof strategy rules
-```
-
----
-
-## Axiom-family diagnostics are allowed
-
-Although axiom identity should not drive selection, axiom usage should be reported as telemetry.
-
-The purpose of axiom-family diagnostics is to answer questions such as:
-
-```text
-Is the search generating candidates using all three axioms?
-Is selection accidentally deleting all candidates from one axiom family?
-Are candidates using a particular axiom present but consistently low-ranked?
-Is the beam dominated by one proof family?
-```
-
-Add or maintain functions such as:
-
-```python
-axiom_counts(proof) -> tuple[int, int, int]
-uses_ax1(proof) -> bool
-uses_ax2(proof) -> bool
-uses_ax3(proof) -> bool
-```
-
-Suggested diagnostics:
-
-```text
-generated_ax1_fraction
-generated_ax2_fraction
-generated_ax3_fraction
-
-kept_ax1_fraction
-kept_ax2_fraction
-kept_ax3_fraction
-
-best_candidate_using_ax1
-best_candidate_using_ax2
-best_candidate_using_ax3
-
-best_closed_candidate_using_ax1
-best_closed_candidate_using_ax2
-best_closed_candidate_using_ax3
-
-best_schematic_candidate_using_ax1
-best_schematic_candidate_using_ax2
-best_schematic_candidate_using_ax3
-```
-
-These are diagnostics only. Do not feed them directly into the scoring function as axiom-family bonuses.
-
-If a benchmark involving negation fails and diagnostics show:
-
-```text
-many Ax3 candidates generated
-almost no Ax3 candidates kept
-```
-
-then the fix should still be structural, for example:
-
-```text
-improve consequent-suffix scoring
-improve closed/schematic separation
-improve schema instantiation
-improve assumption-debt handling
-```
-
-not:
-
-```text
-add Ax3 bonus
-```
-
----
-
-## Target-directed CD pair preselection
-
-The beam search should avoid trying all ordered CD pairs.
-
-Avoid the naive pattern:
+The naive pattern:
 
 ```python
 for major in pair_pool:
@@ -303,7 +189,258 @@ for major in pair_pool:
         try_make_cd(major, minor)
 ```
 
-This becomes effectively quadratic in the pair-pool size.
+is effectively quadratic in the size of the pair pool.
+
+However, a purely strict preselected-pair beam can over-prune useful intermediate proofs. This caused a regression on the syllogism benchmark. The tool found the weaker theorem:
+
+```text
+(p → q) → p → q
+```
+
+instead of the target:
+
+```text
+(p → q) → (r → p) → r → q
+```
+
+This suggests that strict target-directed preselection is too exploitative. It preserves target-shaped candidates but may discard intermediate formulas needed to build contextualized implications.
+
+The fix should not be to expose user-facing beam modes. Instead, implement one default cascading search policy.
+
+---
+
+## Design decision: default cascading beam search
+
+Do not expose beam modes as a main user interface.
+
+The tool should run a single default search procedure that automatically escalates:
+
+```text
+Phase 1: strict-preselected beam
+Phase 2: hybrid beam
+Phase 3: expanded-budget hybrid beam
+Failure: report not found
+```
+
+The user should still call the tool simply:
+
+```bash
+PYTHONPATH=src python -m birdrat_proplogic.run 'target'
+```
+
+or:
+
+```bash
+PYTHONPATH=src python -m birdrat_proplogic.run_benchmarks --small-targets
+```
+
+They should not need to choose between `strict`, `hybrid`, or `expanded` modes.
+
+The benchmark output may report which phase solved the theorem, but the phases should be implementation details of the default search policy.
+
+---
+
+## SearchPhase dataclass
+
+Add a dataclass representing one search attempt in the cascade.
+
+Suggested type:
+
+```python
+@dataclass(frozen=True)
+class SearchPhase:
+    name: str
+    beam_width: int
+    beam_max_depth: int
+    beam_pair_budget: int
+    prioritized_fraction: float
+    suffix_fraction: float
+    exploratory_fraction: float
+    population_size: int
+    generations: int
+```
+
+Field meanings:
+
+```text
+name:
+  human-readable phase name used in reports
+  examples: strict-preselected, hybrid, expanded-hybrid
+
+beam_width:
+  number of beam candidates retained per layer/category
+
+beam_max_depth:
+  number of deterministic CD expansion layers
+
+beam_pair_budget:
+  maximum number of CD pairs attempted per beam layer
+
+prioritized_fraction:
+  fraction of pair budget allocated to target-directed prioritized pairs
+
+suffix_fraction:
+  fraction of pair budget allocated to implication-suffix/subgoal-diverse pairs
+
+exploratory_fraction:
+  fraction of pair budget allocated to exploratory compatible pairs
+
+population_size:
+  evolutionary population size for this phase
+
+generations:
+  number of evolutionary generations for this phase
+```
+
+Fractions should be validated:
+
+```text
+prioritized_fraction >= 0
+suffix_fraction >= 0
+exploratory_fraction >= 0
+sum is approximately 1.0
+```
+
+If the sum differs slightly due to floating point rounding, normalize or assign the remainder to the prioritized bucket.
+
+---
+
+## Default phase schedule
+
+Add:
+
+```python
+make_default_search_phases(base_config) -> tuple[SearchPhase, ...]
+```
+
+This should produce three phases.
+
+### Phase 1: strict-preselected
+
+Purpose:
+
+```text
+Fast path. Try the current strict target-directed pair search first.
+```
+
+Suggested values:
+
+```text
+name = "strict-preselected"
+
+beam_width = base_config.beam_width
+beam_max_depth = base_config.beam_max_depth
+beam_pair_budget = base_config.beam_pair_budget
+
+prioritized_fraction = 1.00
+suffix_fraction = 0.00
+exploratory_fraction = 0.00
+
+population_size = base_config.population_size
+generations = base_config.max_generations
+```
+
+This keeps easy successes fast. Identity and contraction should often be solved here.
+
+### Phase 2: hybrid
+
+Purpose:
+
+```text
+Recover from over-pruning by reserving some budget for suffix/subgoal-diverse and exploratory pairs.
+```
+
+Suggested values:
+
+```text
+name = "hybrid"
+
+beam_width = base_config.beam_width
+beam_max_depth = base_config.beam_max_depth
+beam_pair_budget = base_config.beam_pair_budget
+
+prioritized_fraction = 0.70
+suffix_fraction = 0.20
+exploratory_fraction = 0.10
+
+population_size = base_config.population_size
+generations = base_config.max_generations
+```
+
+This phase should help targets like syllogism, where strict preselection may discard contextual intermediate formulas.
+
+### Phase 3: expanded-hybrid
+
+Purpose:
+
+```text
+Last bounded attempt before reporting failure.
+```
+
+Suggested values:
+
+```text
+name = "expanded-hybrid"
+
+beam_width = ceil(1.5 * base_config.beam_width)
+beam_max_depth = base_config.beam_max_depth + 1
+beam_pair_budget = 2 * base_config.beam_pair_budget
+
+prioritized_fraction = 0.60
+suffix_fraction = 0.25
+exploratory_fraction = 0.15
+
+population_size = base_config.population_size
+generations = base_config.max_generations
+```
+
+Avoid unbounded escalation. If this phase fails, report failure cleanly.
+
+Do not aggressively increase every parameter. Prefer this order:
+
+```text
+increase beam_pair_budget first
+increase beam_width moderately
+increase beam_max_depth by at most 1
+```
+
+---
+
+## Beam pair budget allocation
+
+Modify beam pair generation so it accepts the three phase fractions:
+
+```text
+prioritized_fraction
+suffix_fraction
+exploratory_fraction
+```
+
+For each beam layer:
+
+```python
+prioritized_budget = floor(beam_pair_budget * prioritized_fraction)
+suffix_budget = floor(beam_pair_budget * suffix_fraction)
+exploratory_budget = beam_pair_budget - prioritized_budget - suffix_budget
+```
+
+Then generate pair candidates from three channels:
+
+```text
+1. prioritized target-directed pairs
+2. suffix/subgoal-diverse pairs
+3. exploratory compatible pairs
+```
+
+Deduplicate pairs before attempting CD.
+
+A pair can be identified by object identity or stable proof IDs, depending on the current architecture. Avoid trying the same ordered pair twice in the same layer.
+
+---
+
+## Pair channel 1: prioritized target-directed pairs
+
+This is the current strict strategy.
 
 A CD step proves `B` when:
 
@@ -312,13 +449,39 @@ major proves A → B
 minor proves A
 ```
 
-Therefore, for a target `T`, good major candidates are implications whose consequents are useful relative to `T`.
+Good major candidates are implications whose consequents are useful relative to the target or generated regions.
 
-This is a formula-driven criterion and is acceptable.
+Prioritized-pair ranking should use:
+
+```text
+- major consequent equals target
+- major consequent unifies with target
+- major consequent equals a generated region
+- major consequent unifies with a generated region
+- major consequent has high directed similarity to target/regions
+- candidate has low assumption debt
+- candidate is not pure vacuous weakening
+- proof and formula sizes are controlled
+```
+
+Do not use axiom-family bonuses.
+
+No rule should say:
+
+```text
+prefer Ax1
+prefer Ax2
+prefer Ax3
+if target contains negation, boost Ax3
+```
+
+Axiom identity can be logged, but not used as a selection bonus.
 
 ---
 
-## Implication suffixes
+## Pair channel 2: suffix/subgoal-diverse pairs
+
+Strict target matching can miss useful intermediate formulas. Add a channel that explicitly preserves implication-suffix progress.
 
 For a target formula with right-associated implication spine:
 
@@ -326,7 +489,7 @@ For a target formula with right-associated implication spine:
 A1 → A2 → ... → An → H
 ```
 
-the useful target suffixes are:
+the useful suffixes are:
 
 ```text
 H
@@ -336,104 +499,84 @@ A(n-1) → An → H
 A1 → A2 → ... → An → H
 ```
 
-Example:
+Example target:
 
 ```text
-target:
-  (p → q) → (p → q → r) → p → r
-
-suffixes:
-  r
-  p → r
-  (p → q → r) → p → r
-  (p → q) → (p → q → r) → p → r
+(p → q) → (r → p) → r → q
 ```
 
-A CD major whose consequent matches or unifies with one of these suffixes is promising.
+Suffixes:
 
-Add:
+```text
+q
+r → q
+(r → p) → r → q
+(p → q) → (r → p) → r → q
+```
+
+Example target:
+
+```text
+(p → q) → (p → q → r) → p → r
+```
+
+Suffixes:
+
+```text
+r
+p → r
+(p → q → r) → p → r
+(p → q) → (p → q → r) → p → r
+```
+
+Add or maintain:
 
 ```python
 implication_spine(formula) -> tuple[tuple[Formula, ...], Formula]
 implication_spine_suffixes(formula) -> tuple[Formula, ...]
 ```
 
+Suffix/subgoal-diverse pairs should include majors whose consequent matches, unifies with, or is close to one of these suffixes.
+
+This is still a neutral formula-driven heuristic. It does not encode specific proof ideas.
+
+The suffix channel should prefer diversity across suffixes. Do not allow all suffix-budget pairs to target only the final head `H`.
+
+Suggested allocation inside the suffix channel:
+
+```text
+for each suffix:
+    collect/rank candidate pairs whose major consequent is close to that suffix
+    keep roughly suffix_budget / number_of_suffixes pairs
+```
+
 ---
 
-## Major candidate priority
+## Pair channel 3: exploratory compatible pairs
 
-Add:
+The exploratory channel exists to prevent catastrophic pruning.
 
-```python
-implication_major_parts(proof) -> tuple[Formula, Formula] | None
-```
-
-If:
+It should not try arbitrary invalid pairs. It should still require basic compatibility:
 
 ```text
-conclusion(proof) = A → B
+major conclusion is implication-shaped
+major antecedent is shape-compatible with minor conclusion
+actual unification succeeds before the pair is accepted
 ```
 
-then return:
+But it should be less target-directed.
+
+Acceptable exploratory sources:
 
 ```text
-(A, B)
+- random compatible pairs from the current pair pool
+- novelty-ranked compatible pairs
+- pairs involving candidates from underrepresented behavior descriptors
+- pairs involving closed candidates not selected by the target-directed channel
+- pairs involving schematic candidates not selected by the target-directed channel
 ```
 
-Otherwise return `None`.
-
-Add:
-
-```python
-major_priority(major, target, regions) -> float
-```
-
-Major priority should reward:
-
-```text
-- consequent exactly equals target
-- consequent unifies with target
-- consequent exactly equals a generated region
-- consequent unifies with a generated region
-- consequent equals a target implication suffix
-- consequent unifies with a target implication suffix
-- consequent has high directed similarity to target/regions
-- consequent has the same final implication-spine head as target/regions
-```
-
-Major priority should penalize:
-
-```text
-- large antecedent A
-- large proof size
-- many CD steps
-- large formula size
-- purely vacuous weakening patterns
-```
-
-Do not include axiom-family bonuses in `major_priority`.
-
-Sketch:
-
-```python
-def major_priority(major, target, regions):
-    parts = implication_major_parts(major)
-    if parts is None:
-        return float("-inf")
-
-    antecedent, consequent = parts
-
-    return (
-        suffix_match_weight * suffix_priority(consequent, target, regions)
-        + consequent_similarity_weight * best_consequent_similarity(consequent, target, regions)
-        + unification_weight * int(unifies_with_target_or_suffix(consequent, target, regions))
-        - antecedent_size_penalty * formula_size(antecedent)
-        - proof_size_penalty * proof_size(major)
-        - cd_step_penalty * cd_steps(major)
-    )
-```
-
-Weights should be configurable.
+The exploratory channel should be small, for example 10–15% of the budget. Its purpose is insurance against over-pruning, not random search dominance.
 
 ---
 
@@ -443,7 +586,7 @@ Given a major antecedent `A`, do not try every possible minor.
 
 A minor candidate is useful only if its conclusion can unify with `A`.
 
-Add a coarse shape index for minor conclusions.
+Use a coarse shape index for minor conclusions.
 
 Suggested shape categories:
 
@@ -471,9 +614,9 @@ A is Imp(...):
   try Imp(...) and schematic/meta-compatible candidates
 ```
 
-This index does not need to be complete. It is a preselection heuristic. The actual `unify` call remains the final authority.
+This index is only a preselection heuristic. The actual `unify` call remains the final authority.
 
-Add:
+Add or maintain:
 
 ```python
 compatible_minor_candidates(antecedent, proof_pool, index) -> Iterable[Proof]
@@ -485,7 +628,9 @@ Then filter/rank by actual unification.
 
 ## Pair priority
 
-Add:
+Maintain a pair-priority function.
+
+Suggested type:
 
 ```python
 pair_priority(major, minor, target, regions) -> float
@@ -496,7 +641,7 @@ It should:
 ```text
 1. require major conclusion to be implication-shaped
 2. require major antecedent to unify with minor conclusion
-3. reward high major_priority
+3. reward high major priority
 4. penalize large minor proof
 5. penalize large substitution terms
 6. optionally reward closed minors when target search is closed
@@ -528,78 +673,188 @@ Do not include axiom-family bonuses in `pair_priority`.
 
 ---
 
-## Beam pair budget
+## Search with fallback
 
-Add or preserve a configuration option:
+Add:
 
-```text
-beam_pair_budget
+```python
+search_with_fallback(target, config, rng) -> SearchResult
 ```
 
-The beam should try only the top-ranked candidate pairs per layer.
+or equivalent.
 
-Instead of:
-
-```text
-try all O(n²) ordered pairs
-```
-
-do:
+Behavior:
 
 ```text
-rank plausible pairs
-try top beam_pair_budget pairs
+1. Build default phases from base config.
+2. Run strict-preselected phase.
+3. If an exact target proof is found, stop and return success.
+4. Otherwise run hybrid phase.
+5. If an exact target proof is found, stop and return success.
+6. Otherwise run expanded-hybrid phase.
+7. If an exact target proof is found, stop and return success.
+8. Otherwise report failure with best candidates and diagnostics from all phases.
 ```
 
-This is the most important performance change before increasing `beam-width`.
+Do not merge populations across phases initially. Each phase can run from scratch using the same target and a deterministic phase-specific RNG seed.
+
+Reason:
+
+```text
+Running from scratch avoids carrying a collapsed population from a failed strict phase into the fallback phase.
+```
+
+Use deterministic phase seeds so runs are reproducible:
+
+```python
+phase_rng = random.Random(base_seed + phase_index * LARGE_CONSTANT)
+```
+
+or another stable derivation.
 
 ---
 
-## Revised beam algorithm
+## SearchResult / PhaseReport
 
-The beam should use preselected CD pairs.
+Add or maintain structured result objects.
 
-Sketch:
+Suggested:
 
 ```python
-for depth in range(max_depth):
-    pair_pool = build_pair_pool(seeds, known, frontier)
-
-    index = build_minor_shape_index(pair_pool)
-
-    candidate_pairs = []
-
-    majors = top_k(
-        [p for p in pair_pool if implication_major_parts(p) is not None],
-        key=lambda p: major_priority(p, target, regions),
-        k=major_budget,
-    )
-
-    for major in majors:
-        antecedent, _ = implication_major_parts(major)
-        minors = compatible_minor_candidates(antecedent, pair_pool, index)
-
-        for minor in minors:
-            priority = pair_priority(major, minor, target, regions)
-            if priority is finite:
-                candidate_pairs.append((priority, major, minor))
-
-    for _, major, minor in top_k(candidate_pairs, k=beam_pair_budget):
-        candidate = try_make_cd(major, minor)
-        if candidate is valid:
-            collect candidate
-
-    split candidates into:
-        closed candidates
-        schematic candidates
-
-    keep top closed candidates by target/region score
-    keep top schematic candidates by schema score + novelty
-
-    update frontier
+@dataclass
+class PhaseReport:
+    phase_name: str
+    found_exact: bool
+    best_exact_proof: Proof | None
+    best_closed_candidate: Proof | None
+    best_schematic_candidate: Proof | None
+    best_novelty_candidate: Proof | None
+    best_score: float
+    target_similarity: float
+    runtime_seconds: float
+    beam_pair_attempts: int
+    beam_valid_products: int
+    beam_layer_counts: tuple[BeamLayerStats, ...]
+    population_size: int
+    generations: int
 ```
 
-Preserve existing closed/schematic ranking after candidates are generated. The new heuristic reduces pair attempts before CD; it does not replace candidate ranking after CD.
+Suggested:
+
+```python
+@dataclass
+class SearchResult:
+    found: bool
+    proof: Proof | None
+    solved_in_phase: str | None
+    phase_reports: tuple[PhaseReport, ...]
+    best_closed_candidate: Proof | None
+    best_schematic_candidate: Proof | None
+    best_novelty_candidate: Proof | None
+    total_runtime_seconds: float
+```
+
+When success occurs in an early phase, later phases should not run.
+
+---
+
+## Benchmark reporting
+
+Update:
+
+```bash
+PYTHONPATH=src python -m birdrat_proplogic.run_benchmarks --small-targets
+```
+
+to report phase information.
+
+For each benchmark:
+
+```text
+name
+target
+core target
+found exact proof
+solved in phase
+total runtime
+best final proof stats
+phase reports:
+  phase name
+  found exact proof
+  best closed candidate
+  best schematic candidate
+  best novelty candidate
+  runtime
+  beam pair attempts
+  beam valid products
+  beam layer counts
+```
+
+Example success output:
+
+```text
+name: syllogism
+target: (p → q) → (r → p) → r → q
+found exact proof: True
+solved in phase: hybrid
+
+phase results:
+  strict-preselected:
+    found: False
+    best closed: (p → q) → p → q
+    runtime: 36.8s
+
+  hybrid:
+    found: True
+    best closed: (p → q) → (r → p) → r → q
+    runtime: 12.4s
+```
+
+Example failure output:
+
+```text
+name: distribution-application
+found exact proof: False
+solved in phase: none
+
+phase results:
+  strict-preselected: not found
+  hybrid: not found
+  expanded-hybrid: not found
+
+best closed candidate across phases: ...
+best schematic candidate across phases: ...
+```
+
+---
+
+## Regression expectations
+
+The benchmark suite should guard against regressions.
+
+Expected near-term results:
+
+```text
+identity:
+  should be found by some phase, preferably strict-preselected
+
+syllogism:
+  should be found by some phase
+  this is the immediate regression target
+
+contraction:
+  should be found by some phase
+
+classical-negation:
+  may still fail
+  failure should be cleanly reported
+
+distribution/application:
+  may still fail
+  failure should be cleanly reported
+```
+
+Do not mark classical-negation and distribution/application as hard failures yet. They are active search targets, not baseline requirements.
 
 ---
 
@@ -667,6 +922,16 @@ if unify(schema_conclusion, target_or_region) succeeds:
 
 If unification fails, keep the candidate in the schema archive rather than allowing it to dominate closed-target search.
 
+Schema instantiation should not use known proofs. It may use formulas from:
+
+```text
+target
+generated regions
+target subformulas
+region subformulas
+simple formula-pool expansions
+```
+
 ---
 
 ## Quality-diversity selection
@@ -709,6 +974,48 @@ The important rule is:
 ```text
 Do not let a single scalar score define the whole next generation.
 ```
+
+---
+
+## Neutrality requirement for heuristics
+
+Do not seed the beam heuristic with proof ideas tied to a specific axiom.
+
+Do not implement rules such as:
+
+```text
+if the target contains negation, boost Ax3
+if the target looks classical, prefer Ax3-containing candidates
+if the target is implicational, prefer Ax1/Ax2
+```
+
+The beam heuristic should be target-formula driven, not axiom-family driven.
+
+Acceptable heuristic signals:
+
+```text
+- consequent of a CD major matches or unifies with the target
+- consequent of a CD major matches or unifies with a target implication suffix
+- candidate conclusion has a useful implication spine
+- candidate covers target antecedents
+- candidate has low assumption debt
+- candidate is closed when the target is closed
+- schematic candidate can be instantiated toward the target
+- proof is smaller or has fewer CD steps
+- formula size is controlled
+```
+
+Unacceptable heuristic signals:
+
+```text
+- explicit bonus for using Ax1
+- explicit bonus for using Ax2
+- explicit bonus for using Ax3
+- target-specific axiom preferences
+- benchmark-specific proof strategy rules
+```
+
+Axiom usage may be logged as diagnostics only.
 
 ---
 
@@ -757,7 +1064,7 @@ schematic products kept
 instantiated schema products
 ```
 
-Axiom-family diagnostics:
+Axiom-family diagnostics are allowed as telemetry only:
 
 ```text
 generated_ax1_fraction
@@ -771,34 +1078,30 @@ kept_ax3_fraction
 best_candidate_using_ax1
 best_candidate_using_ax2
 best_candidate_using_ax3
-
-best_closed_candidate_using_ax1
-best_closed_candidate_using_ax2
-best_closed_candidate_using_ax3
-
-best_schematic_candidate_using_ax1
-best_schematic_candidate_using_ax2
-best_schematic_candidate_using_ax3
 ```
 
-Again: axiom-family diagnostics are telemetry only. They should not be converted into axiom-family bonuses.
+Do not feed axiom-family diagnostics back into scoring as bonuses.
 
 ---
 
 ## Recommended implementation order
 
-Implement the next changes in this order:
+Implement the cascading search changes in this order:
 
 ```text
-1. Preserve the target-only benchmark suite.
-2. Confirm identity, syllogism, and contraction remain solvable.
-3. Add or strengthen target implication suffix logic.
-4. Add stronger target-directed CD pair preselection.
-5. Add or improve beam_pair_budget and beam diagnostics.
-6. Add axiom-family survival diagnostics as telemetry only.
-7. Add schema instantiation from substitutions and formula-pool replacements.
-8. Re-run the five benchmark targets.
-9. Do not return to encoded conjunction benchmarks until the five-target suite is reliable.
+1. Add SearchPhase dataclass.
+2. Add make_default_search_phases(base_config).
+3. Modify beam pair generation to accept prioritized/suffix/exploratory budget fractions.
+4. Implement strict-preselected phase using current behavior.
+5. Implement hybrid pair generation.
+6. Implement expanded-hybrid phase.
+7. Implement search_with_fallback.
+8. Update run_benchmarks to report solved_in_phase and phase reports.
+9. Add regression expectations:
+   - identity should be found
+   - syllogism should be found by some phase
+   - contraction should be found
+10. Re-run the five target-only benchmarks.
 ```
 
 ---
@@ -819,27 +1122,27 @@ large external proof database ingestion
 more one-off bad-shape penalties
 axiom-family selection bonuses
 target-specific axiom preferences
+user-facing beam mode selection
 ```
 
 ---
 
 ## Summary
 
-Current status:
+Current issue:
 
 ```text
-The system can solve some small target-only P₂ + CD benchmarks.
-The remaining failures reveal issues in target-directed beam generation, schema instantiation, and search diversity.
+Strict preselected-pair beam search is fast and structured, but it can over-prune useful intermediate proofs and caused a regression on syllogism.
 ```
 
 Near-term fix:
 
 ```text
-neutral target-formula-driven beam heuristics
-+ implication suffix priority
-+ CD pair preselection
-+ schema instantiation
-+ axiom-family diagnostics as telemetry only
+one default cascading search policy:
+  strict-preselected
+  then hybrid
+  then expanded-hybrid
+  then report failure
 ```
 
-Do not return to encoded conjunction until the small target-only benchmark suite is reliable.
+This avoids exposing user-facing modes while making the tool more robust against heuristic over-pruning.

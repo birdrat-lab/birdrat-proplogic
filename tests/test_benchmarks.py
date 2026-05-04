@@ -1,4 +1,7 @@
+from dataclasses import replace
+
 from birdrat_proplogic.benchmarks import small_target_benchmarks
+from birdrat_proplogic.config import EvolutionConfig
 from birdrat_proplogic.run_benchmarks import build_arg_parser, render_benchmark_result
 from birdrat_proplogic.surface import surface_pretty
 
@@ -39,6 +42,19 @@ def test_run_benchmarks_parser_accepts_small_targets_and_overrides() -> None:
 
 def test_render_benchmark_result_runs_search_and_reports_required_fields() -> None:
     benchmark = small_target_benchmarks()[0]
+    benchmark = replace(
+        benchmark,
+        config=replace(
+            benchmark.config,
+            evolution=EvolutionConfig(
+                population_size=6,
+                max_generations=2,
+                beam_width=12,
+                beam_max_depth=2,
+                beam_pair_budget=100,
+            ),
+        ),
+    )
 
     output = render_benchmark_result(benchmark, seed=1)
 
@@ -49,3 +65,5 @@ def test_render_benchmark_result_runs_search_and_reports_required_fields() -> No
     assert "beam pair attempts:" in output
     assert "beam valid products:" in output
     assert "schema instantiation products:" in output
+    assert "solved in phase:" in output
+    assert "phase results:" in output

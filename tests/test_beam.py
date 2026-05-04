@@ -19,7 +19,7 @@ def test_cd_beam_rediscovers_identity_shape_without_hardcoded_proof() -> None:
     target = Imp(Meta("?x"), Meta("?x"))
     config = ProplogicConfig(
         archive=ArchiveConfig(path=None),
-        evolution=EvolutionConfig(beam_width=12, beam_max_depth=2),
+        evolution=EvolutionConfig(beam_width=18, beam_max_depth=2),
     )
 
     proofs = cd_beam_search(target, (), (target,), config)

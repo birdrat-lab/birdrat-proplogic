@@ -10,12 +10,14 @@ from birdrat_proplogic.formula import pretty
 from birdrat_proplogic.goals import Goal
 from birdrat_proplogic.parse import ParseError, parse_surface
 from birdrat_proplogic.proof import Invalid, proof_pretty
+from birdrat_proplogic.search import SearchResult, search_with_fallback
 from birdrat_proplogic.surface import SAnd, SAtom, SImp, SurfaceFormula, desugar, surface_pretty
 
 
 @dataclass(frozen=True)
 class SearchReport:
     result: EvolutionResult
+    search_result: SearchResult | None = None
 
 
 def conjunction_commutativity_target() -> SurfaceFormula:
@@ -29,7 +31,8 @@ def run_search(
     config: ProplogicConfig,
     seed: int | None = None,
 ) -> SearchReport:
-    return SearchReport(result=evolve(theorem, config=config, seed=seed))
+    search_result = search_with_fallback(theorem, config=config, seed=seed)
+    return SearchReport(result=search_result.result, search_result=search_result)
 
 
 def render_search_report(report: SearchReport) -> str:
@@ -58,6 +61,7 @@ def render_search_report(report: SearchReport) -> str:
             "",
             "search:",
             f"  generations: {len(result.history)}",
+            f"  solved in phase: {report.search_result.solved_in_phase if report.search_result else 'n/a'}",
             f"  active depth: {_depth_summary(result)}",
             f"  archive formulas: {len(result.archive)}",
             f"  archive proofs: {archive_size(result.archive)}",
