@@ -190,9 +190,21 @@ def _raw_beam_layer_text(layers: tuple) -> str:
             f"strict={layer.strict_pairs_attempted},suffix={layer.suffix_pairs_attempted},"
             f"explore={layer.exploratory_pairs_attempted},dupes={layer.duplicate_pairs_removed},"
             f"closed={layer.closed_products},schematic={layer.schematic_products},"
+            f"suffix_seen={_suffix_survivor_text(layer.suffix_candidates_seen_by_suffix)},"
+            f"suffix_closed_seen={_suffix_survivor_text(layer.suffix_closed_candidates_seen_by_suffix)},"
+            f"suffix_schematic_seen={_suffix_survivor_text(layer.suffix_schematic_candidates_seen_by_suffix)},"
+            f"suffix_survivors={_suffix_survivor_text(layer.suffix_survivors_by_suffix)},"
+            f"best_by_suffix={_suffix_survivor_text(layer.best_candidate_by_suffix)},"
+            f"schema_attempts={layer.schema_instantiation_attempts},"
+            f"schema_valid={layer.schema_instantiation_valid},"
+            f"schema_closed={layer.schema_instantiation_closed},"
+            f"schema_schematic={layer.schema_instantiation_schematic},"
+            f"schema_exact_target={layer.schema_instantiation_exact_target},"
+            f"schema_exact_region={layer.schema_instantiation_exact_region},"
+            f"schema_exact_suffix={layer.schema_instantiation_exact_suffix},"
+            f"best_instantiated={layer.best_instantiated_candidate or 'none'},"
             f"exact_generated={layer.exact_target_generated_in_beam},"
-            f"exact_survived={layer.exact_target_survived_to_population},"
-            f"suffix_survivors={_suffix_survivor_text(layer.suffix_survivors_by_suffix)}"
+            f"exact_survived={layer.exact_target_survived_to_population}"
         )
         for layer in layers
     )

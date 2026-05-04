@@ -336,6 +336,10 @@ def apply_proof_subst(proof: Proof, subst: dict[str, Formula]) -> Proof:
             return CD(apply_proof_subst(major, subst), apply_proof_subst(minor, subst))
 
 
+def apply_substitution_to_proof(proof: Proof, subst: dict[str, Formula]) -> Proof:
+    return apply_proof_subst(proof, subst)
+
+
 def implication_spine(formula: Formula) -> tuple[tuple[Formula, ...], Formula]:
     antecedents: list[Formula] = []
     current = formula

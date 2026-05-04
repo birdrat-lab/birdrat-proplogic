@@ -190,13 +190,35 @@ def implication_spine_similarity(candidate: Formula, target: Formula) -> float:
     target_antecedents, target_consequent = implication_spine(target)
 
     antecedent_score = _antecedent_similarity(candidate_antecedents, target_antecedents)
+    coverage_score = antecedent_coverage_score(candidate, target)
     consequent_score = _consequent_similarity(candidate_consequent, target_consequent)
     assumption_score = _assumption_count_score(candidate_antecedents, target_antecedents)
     debt = assumption_debt(candidate, target)
 
-    score = 0.25 * antecedent_score + 0.60 * consequent_score + 0.15 * assumption_score
+    score = 0.15 * antecedent_score + 0.05 * coverage_score + 0.65 * consequent_score + 0.15 * assumption_score
     score -= min(0.75, 0.20 * debt)
     return max(0.0, min(1.0, score))
+
+
+def antecedent_coverage_score(candidate: Formula, target: Formula) -> float:
+    candidate_antecedents, _ = implication_spine(candidate)
+    target_antecedents, _ = implication_spine(target)
+    if not target_antecedents:
+        return 1.0
+    unmatched = list(candidate_antecedents)
+    matched = 0
+    for target_antecedent in target_antecedents:
+        best_index = None
+        best_score = 0.0
+        for index, candidate_antecedent in enumerate(unmatched):
+            score = _antecedent_match_score(candidate_antecedent, target_antecedent)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        if best_index is not None and best_score >= 0.70:
+            matched += 1
+            unmatched.pop(best_index)
+    return matched / len(target_antecedents)
 
 
 def extra_assumptions(candidate: Formula, target: Formula) -> tuple[Formula, ...]:
@@ -237,6 +259,11 @@ def min_assumption_debt(
 ) -> float:
     targets = (target,) + tuple(region.core_theorem() for region in regions)
     return min(assumption_debt(candidate, item, config) for item in targets)
+
+
+def best_antecedent_coverage(candidate: Formula, target: Formula, regions: tuple[Goal, ...] = ()) -> float:
+    targets = (target,) + tuple(region.core_theorem() for region in regions)
+    return max(antecedent_coverage_score(candidate, item) for item in targets)
 
 
 def is_projection_formula(formula: Formula) -> bool:
@@ -360,6 +387,14 @@ def _assumption_count_score(candidate: tuple[Formula, ...], target: tuple[Formul
     if len(candidate) <= len(target):
         return 1.0
     return 1.0 / (1.0 + len(candidate) - len(target))
+
+
+def _antecedent_match_score(candidate: Formula, target: Formula) -> float:
+    if candidate == target:
+        return 1.0
+    if not isinstance(unify(candidate, target), UnifyFailure):
+        return 0.90
+    return formula_similarity(candidate, target)
 
 
 def _consequent_similarity(candidate: Formula, target: Formula) -> float:

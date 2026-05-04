@@ -105,6 +105,25 @@ def test_cd_beam_search_result_respects_pair_budget_and_reports_diagnostics() ->
     assert all(0.0 <= layer.kept_ax3_fraction <= 1.0 for layer in result.diagnostics.layer_counts)
 
 
+def test_beam_reports_suffix_retention_and_schema_instantiation() -> None:
+    target = Imp(Atom("a"), Atom("a"))
+    config = ProplogicConfig(
+        archive=ArchiveConfig(path=None),
+        evolution=EvolutionConfig(beam_width=12, beam_max_depth=2, beam_pair_budget=500),
+    )
+
+    result = cd_beam_search_result(target, (), (target,), config)
+
+    assert any(layer.schema_instantiation_attempts > 0 for layer in result.diagnostics.layer_counts)
+    assert any(layer.schema_instantiation_valid > 0 for layer in result.diagnostics.layer_counts)
+    assert any(layer.schema_instantiation_exact_target > 0 for layer in result.diagnostics.layer_counts)
+    assert all(layer.suffix_candidates_seen_by_suffix for layer in result.diagnostics.layer_counts)
+    assert any(
+        any(count > 0 for _suffix, count in layer.suffix_survivors_by_suffix)
+        for layer in result.diagnostics.layer_counts
+    )
+
+
 def test_prioritized_candidate_pairs_filters_to_budgeted_unifiable_pairs() -> None:
     p = Atom("p")
     q = Atom("q")

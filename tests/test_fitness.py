@@ -1,6 +1,7 @@
 from birdrat_proplogic.config import ProplogicConfig
 from birdrat_proplogic.fitness import (
     assumption_debt,
+    antecedent_coverage_score,
     best_region_similarity,
     cd_progress,
     depth_penalty,
@@ -61,6 +62,18 @@ def test_assumption_debt_tracks_extra_candidate_antecedents() -> None:
 
     assert extra_assumptions(bad, target) == (e1, e2)
     assert assumption_debt(bad, target) > assumption_debt(target, target)
+
+
+def test_antecedent_coverage_is_asymmetric() -> None:
+    a = Atom("a")
+    b = Atom("b")
+    h = Atom("h")
+    target = Imp(a, Imp(b, h))
+
+    assert antecedent_coverage_score(target, target) == 1.0
+    assert antecedent_coverage_score(Imp(a, h), target) == 0.5
+    assert antecedent_coverage_score(Imp(a, Imp(b, Imp(Atom("c"), h))), target) == 1.0
+    assert antecedent_coverage_score(target, Imp(a, h)) == 1.0
 
 
 def test_directed_similarity_prefers_exact_and_stronger_over_extra_assumptions() -> None:

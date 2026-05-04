@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import product
 from math import isfinite
 from typing import Iterable
 
 from birdrat_proplogic.config import DEFAULT_CONFIG, ProplogicConfig
 from birdrat_proplogic.dproof import DProofParseError, fresh_axiom
 from birdrat_proplogic.fitness import (
+    antecedent_coverage_score,
+    assumption_debt,
+    best_antecedent_coverage,
     best_consequent_similarity,
     best_directed_similarity,
     implication_spine,
     total_fitness,
     total_formula_size,
 )
-from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size, is_closed_formula, pretty
+from birdrat_proplogic.formula import Atom, Formula, Imp, Meta, Not, formula_size, is_closed_formula, metas, pretty, subformulas
 from birdrat_proplogic.goals import Goal
 from birdrat_proplogic.proof import (
     Ax1,
@@ -27,7 +31,7 @@ from birdrat_proplogic.proof import (
     is_vacuous_cd,
     proof_size,
 )
-from birdrat_proplogic.quality import behavior_descriptor, lemma_schema_score, novelty_score
+from birdrat_proplogic.quality import apply_proof_subst, behavior_descriptor, lemma_schema_score, novelty_score
 from birdrat_proplogic.quality import uses_ax1, uses_ax2, uses_ax3
 from birdrat_proplogic.seed import try_make_cd
 from birdrat_proplogic.unify import UnifyFailure, Substitution, unify
@@ -49,7 +53,19 @@ class BeamLayerStats:
     schematic_products: int
     closed_survivors: int
     schematic_survivors: int
+    suffix_candidates_seen_by_suffix: tuple[tuple[str, int], ...]
+    suffix_closed_candidates_seen_by_suffix: tuple[tuple[str, int], ...]
+    suffix_schematic_candidates_seen_by_suffix: tuple[tuple[str, int], ...]
     suffix_survivors_by_suffix: tuple[tuple[str, int], ...]
+    best_candidate_by_suffix: tuple[tuple[str, str], ...]
+    schema_instantiation_attempts: int
+    schema_instantiation_valid: int
+    schema_instantiation_closed: int
+    schema_instantiation_schematic: int
+    schema_instantiation_exact_target: int
+    schema_instantiation_exact_region: int
+    schema_instantiation_exact_suffix: int
+    best_instantiated_candidate: str | None
     exact_target_generated_in_beam: bool
     exact_target_survived_to_population: bool
     generated_ax1_fraction: float
@@ -91,6 +107,27 @@ class PairSelection:
     suffix_pairs_attempted: int
     exploratory_pairs_attempted: int
     duplicate_pairs_removed: int
+
+
+@dataclass(frozen=True)
+class SuffixRetentionDiagnostics:
+    candidates_seen_by_suffix: tuple[tuple[str, int], ...]
+    closed_candidates_seen_by_suffix: tuple[tuple[str, int], ...]
+    schematic_candidates_seen_by_suffix: tuple[tuple[str, int], ...]
+    survivors_by_suffix: tuple[tuple[str, int], ...]
+    best_candidate_by_suffix: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class SchemaInstantiationDiagnostics:
+    attempts: int = 0
+    valid: int = 0
+    closed: int = 0
+    schematic: int = 0
+    exact_target: int = 0
+    exact_region: int = 0
+    exact_suffix: int = 0
+    best_candidate: str | None = None
 
 
 def cd_beam_search(
@@ -142,9 +179,32 @@ def cd_beam_search_result(
             new.append(candidate)
 
         closed, schematic = _partition_valid(new)
-        kept_closed = _rank_closed(closed, target, regions, config, width)
-        kept_schematic = _rank_schematic(
+        instantiated, schema_diagnostics = _instantiate_schematic_candidates(
             schematic,
+            target,
+            regions,
+            formula_pool,
+            config,
+            width,
+        )
+        for proof in instantiated:
+            if proof not in known and proof not in new:
+                new.append(proof)
+        closed, schematic = _partition_valid(new)
+        global_closed = _rank_closed(closed, target, regions, config, width)
+        global_schematic = _rank_schematic(
+            schematic,
+            target,
+            regions,
+            behavior_archive,
+            config,
+            width,
+        )
+        kept_closed, kept_schematic, suffix_diagnostics = _retain_with_suffix_buckets(
+            closed,
+            schematic,
+            global_closed,
+            global_schematic,
             target,
             regions,
             behavior_archive,
@@ -164,6 +224,8 @@ def cd_beam_search_result(
                 major_budget,
                 target,
                 pair_selection,
+                suffix_diagnostics,
+                schema_diagnostics,
             )
         )
         if not new:
@@ -200,6 +262,8 @@ def _beam_layer_stats(
     major_budget: int,
     target: Formula,
     pair_selection: PairSelection,
+    suffix_diagnostics: SuffixRetentionDiagnostics,
+    schema_diagnostics: SchemaInstantiationDiagnostics,
 ) -> BeamLayerStats:
     kept = kept_closed + kept_schematic
     generated_fractions = axiom_family_fractions(tuple(new))
@@ -219,7 +283,19 @@ def _beam_layer_stats(
         schematic_products=len(schematic),
         closed_survivors=len(kept_closed),
         schematic_survivors=len(kept_schematic),
-        suffix_survivors_by_suffix=_suffix_survivor_counts(kept_closed, target),
+        suffix_candidates_seen_by_suffix=suffix_diagnostics.candidates_seen_by_suffix,
+        suffix_closed_candidates_seen_by_suffix=suffix_diagnostics.closed_candidates_seen_by_suffix,
+        suffix_schematic_candidates_seen_by_suffix=suffix_diagnostics.schematic_candidates_seen_by_suffix,
+        suffix_survivors_by_suffix=suffix_diagnostics.survivors_by_suffix,
+        best_candidate_by_suffix=suffix_diagnostics.best_candidate_by_suffix,
+        schema_instantiation_attempts=schema_diagnostics.attempts,
+        schema_instantiation_valid=schema_diagnostics.valid,
+        schema_instantiation_closed=schema_diagnostics.closed,
+        schema_instantiation_schematic=schema_diagnostics.schematic,
+        schema_instantiation_exact_target=schema_diagnostics.exact_target,
+        schema_instantiation_exact_region=schema_diagnostics.exact_region,
+        schema_instantiation_exact_suffix=schema_diagnostics.exact_suffix,
+        best_instantiated_candidate=schema_diagnostics.best_candidate,
         exact_target_generated_in_beam=any(conclusion(proof) == target for proof in new),
         exact_target_survived_to_population=any(conclusion(proof) == target for proof in kept),
         generated_ax1_fraction=generated_fractions[0],
@@ -274,7 +350,9 @@ def major_priority_with_config(
         + evolution_config.beam_consequent_similarity_weight * best_consequent_similarity(consequent, target, regions)
         + evolution_config.beam_unification_weight * unifies
         + evolution_config.beam_directed_similarity_weight * best_directed_similarity(consequent, target, regions)
+        + 250.0 * best_antecedent_coverage(consequent, target, regions)
         + evolution_config.beam_head_match_weight * head_match
+        - 50.0 * min(10.0, assumption_debt(consequent, target, config.fitness))
         - evolution_config.beam_antecedent_size_penalty * formula_size(antecedent)
         - evolution_config.beam_major_proof_size_penalty * proof_size(major)
         - evolution_config.beam_major_cd_step_penalty * cd_steps(major)
@@ -532,6 +610,8 @@ def suffix_major_priority(major: Proof, suffix: Formula, config: ProplogicConfig
         evolution_config.beam_suffix_match_weight * max(exact, 0.85 * unifies)
         + evolution_config.beam_consequent_similarity_weight * best_directed_similarity(consequent, suffix, ())
         + evolution_config.beam_head_match_weight * head_match
+        + 250.0 * antecedent_coverage_score(consequent, suffix)
+        - 50.0 * min(10.0, assumption_debt(consequent, suffix, config.fitness))
         - evolution_config.beam_antecedent_size_penalty * formula_size(antecedent)
         - evolution_config.beam_major_proof_size_penalty * proof_size(major)
         - evolution_config.beam_major_cd_step_penalty * cd_steps(major)
@@ -756,6 +836,173 @@ def seeded_axiom_instances(formula_pool: tuple[Formula, ...], width: int) -> tup
     return tuple(_dedupe(proofs))
 
 
+def _instantiate_schematic_candidates(
+    schematic: tuple[Proof, ...],
+    target: Formula,
+    regions: tuple[Goal, ...],
+    formula_pool: tuple[Formula, ...],
+    config: ProplogicConfig,
+    width: int,
+) -> tuple[tuple[Proof, ...], SchemaInstantiationDiagnostics]:
+    evolution_config = config.evolution
+    if not schematic:
+        return ((), SchemaInstantiationDiagnostics())
+    instantiation_pool = _schema_instantiation_formula_pool(target, regions, formula_pool, evolution_config.schema_instantiation_pool_size)
+    schema_candidates = sorted(
+        schematic,
+        key=lambda proof: _schema_instantiation_candidate_score(proof, target, regions, config),
+        reverse=True,
+    )[: max(1, width)]
+    products: list[Proof] = []
+    attempts = valid = closed_count = schematic_count = exact_target = exact_region = exact_suffix = 0
+    suffixes = target_and_region_suffixes(target, regions)
+    seen: set[Proof] = set()
+    for proof in schema_candidates:
+        proof_conclusion = conclusion(proof)
+        if isinstance(proof_conclusion, Invalid):
+            continue
+        proof_metas = tuple(sorted(metas(proof_conclusion), key=lambda item: item.name))
+        if not proof_metas or len(proof_metas) > evolution_config.schema_instantiation_max_metas:
+            continue
+        substitutions = _direct_schema_substitutions(proof_conclusion, suffixes)
+        substitutions += _pool_schema_substitutions(
+            proof_metas,
+            instantiation_pool,
+            max(0, evolution_config.schema_instantiation_max_attempts_per_proof - len(substitutions)),
+        )
+        for subst in substitutions[: evolution_config.schema_instantiation_max_attempts_per_proof]:
+            attempts += 1
+            instantiated = apply_proof_subst(proof, subst)
+            instantiated_conclusion = conclusion(instantiated)
+            if isinstance(instantiated_conclusion, Invalid):
+                continue
+            valid += 1
+            if is_closed_formula(instantiated_conclusion):
+                closed_count += 1
+            else:
+                schematic_count += 1
+            if instantiated_conclusion == target:
+                exact_target += 1
+            if any(instantiated_conclusion == region.core_theorem() for region in regions):
+                exact_region += 1
+            if instantiated_conclusion in suffixes:
+                exact_suffix += 1
+            if instantiated not in seen:
+                products.append(instantiated)
+                seen.add(instantiated)
+    ranked = tuple(
+        sorted(
+            products,
+            key=lambda proof: total_fitness(proof, target, regions, config).score,
+            reverse=True,
+        )[:width]
+    )
+    best_candidate = None
+    if ranked:
+        best_conclusion = conclusion(ranked[0])
+        best_candidate = "invalid" if isinstance(best_conclusion, Invalid) else pretty(best_conclusion)
+    return (
+        ranked,
+        SchemaInstantiationDiagnostics(
+            attempts=attempts,
+            valid=valid,
+            closed=closed_count,
+            schematic=schematic_count,
+            exact_target=exact_target,
+            exact_region=exact_region,
+            exact_suffix=exact_suffix,
+            best_candidate=best_candidate,
+        ),
+    )
+
+
+def _schema_instantiation_candidate_score(
+    proof: Proof,
+    target: Formula,
+    regions: tuple[Goal, ...],
+    config: ProplogicConfig,
+) -> float:
+    proof_conclusion = conclusion(proof)
+    if isinstance(proof_conclusion, Invalid):
+        return float("-inf")
+    return (
+        best_directed_similarity(proof_conclusion, target, regions)
+        + best_antecedent_coverage(proof_conclusion, target, regions)
+        - 0.01 * proof_size(proof)
+        - 0.001 * total_formula_size(proof)
+    )
+
+
+def _schema_instantiation_formula_pool(
+    target: Formula,
+    regions: tuple[Goal, ...],
+    formula_pool: tuple[Formula, ...],
+    limit: int,
+) -> tuple[Formula, ...]:
+    formulas: list[Formula] = []
+    base = (target,) + tuple(region.core_theorem() for region in regions)
+    for formula in base:
+        formulas.extend(implication_spine_suffixes(formula))
+        antecedents, head = implication_spine(formula)
+        formulas.extend(antecedents)
+        formulas.append(head)
+        formulas.extend(subformulas(formula))
+    formulas.extend(formula_pool)
+    seed = tuple(_dedupe_formulas(formulas))
+    expanded: list[Formula] = list(seed)
+    for formula in seed[: max(1, min(10, len(seed)))]:
+        expanded.append(Not(formula))
+    for left in seed[:6]:
+        for right in seed[:6]:
+            expanded.append(Imp(left, right))
+            if len(expanded) >= max(limit * 2, limit):
+                break
+        if len(expanded) >= max(limit * 2, limit):
+            break
+    return tuple(_dedupe_formulas(expanded)[: max(1, limit)])
+
+
+def _direct_schema_substitutions(schema: Formula, targets: tuple[Formula, ...]) -> list[Substitution]:
+    substitutions: list[Substitution] = []
+    seen: set[tuple[tuple[str, Formula], ...]] = set()
+    for target in targets:
+        subst = unify(schema, target)
+        if isinstance(subst, UnifyFailure):
+            continue
+        key = tuple(sorted(subst.items(), key=lambda item: item[0]))
+        if key in seen:
+            continue
+        substitutions.append(subst)
+        seen.add(key)
+    return substitutions
+
+
+def _pool_schema_substitutions(
+    proof_metas: tuple[Meta, ...],
+    formula_pool: tuple[Formula, ...],
+    limit: int,
+) -> list[Substitution]:
+    if limit <= 0:
+        return []
+    substitutions: list[Substitution] = []
+    for replacements in product(formula_pool, repeat=len(proof_metas)):
+        substitutions.append({meta.name: replacement for meta, replacement in zip(proof_metas, replacements)})
+        if len(substitutions) >= limit:
+            break
+    return substitutions
+
+
+def _dedupe_formulas(formulas: list[Formula]) -> list[Formula]:
+    output: list[Formula] = []
+    seen: set[Formula] = set()
+    for formula in formulas:
+        if formula in seen:
+            continue
+        output.append(formula)
+        seen.add(formula)
+    return output
+
+
 def _partition_valid(proofs: list[Proof]) -> tuple[tuple[Proof, ...], tuple[Proof, ...]]:
     closed = []
     schematic = []
@@ -770,6 +1017,63 @@ def _partition_valid(proofs: list[Proof]) -> tuple[tuple[Proof, ...], tuple[Proo
     return (tuple(closed), tuple(schematic))
 
 
+def _retain_with_suffix_buckets(
+    closed: tuple[Proof, ...],
+    schematic: tuple[Proof, ...],
+    global_closed: tuple[Proof, ...],
+    global_schematic: tuple[Proof, ...],
+    target: Formula,
+    regions: tuple[Goal, ...],
+    behavior_archive: tuple,
+    config: ProplogicConfig,
+    width: int,
+) -> tuple[tuple[Proof, ...], tuple[Proof, ...], SuffixRetentionDiagnostics]:
+    suffixes = implication_spine_suffixes(target)
+    closed_suffix = _suffix_bucket_proofs(
+        closed,
+        suffixes,
+        config.evolution.suffix_closed_keep_per_suffix,
+        lambda proof, suffix: _suffix_closed_score(proof, suffix, config),
+    )
+    schematic_suffix = _suffix_bucket_proofs(
+        schematic,
+        suffixes,
+        config.evolution.suffix_schematic_keep_per_suffix,
+        lambda proof, suffix: _suffix_schematic_score(proof, suffix, target, regions, behavior_archive, config),
+    )
+    kept_closed = tuple(_dedupe_by_conclusion_best(
+        list(global_closed) + list(closed_suffix),
+        lambda proof: _closed_score(proof, target, regions, config),
+    )[:width])
+    kept_schematic = tuple(_dedupe_by_conclusion_best(
+        list(global_schematic) + list(schematic_suffix),
+        lambda proof: _schematic_score(proof, target, regions, behavior_archive, config),
+    )[:width])
+    kept = kept_closed + kept_schematic
+    return (kept_closed, kept_schematic, _suffix_retention_diagnostics(closed, schematic, kept, target))
+
+
+def _suffix_bucket_proofs(
+    proofs: tuple[Proof, ...],
+    suffixes: tuple[Formula, ...],
+    keep_per_suffix: int,
+    score,
+) -> tuple[Proof, ...]:
+    if keep_per_suffix <= 0:
+        return ()
+    selected: list[Proof] = []
+    for suffix in suffixes:
+        candidates = [
+            proof
+            for proof in proofs
+            if _suffix_candidate_score(conclusion(proof), suffix) > 0.0
+        ]
+        selected.extend(
+            sorted(candidates, key=lambda proof: score(proof, suffix), reverse=True)[:keep_per_suffix]
+        )
+    return tuple(_dedupe_by_conclusion_best(selected, lambda proof: max(score(proof, suffix) for suffix in suffixes)))
+
+
 def _rank_closed(
     proofs: tuple[Proof, ...],
     target: Formula,
@@ -779,10 +1083,7 @@ def _rank_closed(
 ) -> tuple[Proof, ...]:
     ranked = sorted(
         proofs,
-        key=lambda proof: (
-            total_fitness(proof, target, regions, config).score,
-            -cd_depth(proof),
-        ),
+        key=lambda proof: _closed_score(proof, target, regions, config),
         reverse=True,
     )
     selected: list[Proof] = []
@@ -814,13 +1115,7 @@ def _rank_schematic(
     width: int,
 ) -> tuple[Proof, ...]:
     def score(proof: Proof) -> float:
-        fitness = total_fitness(proof, target, regions, config)
-        descriptor = behavior_descriptor(proof, fitness.conclusion)
-        return lemma_schema_score(fitness, target, regions, descriptor, config) + 50.0 * novelty_score(
-            descriptor,
-            behavior_archive,
-            k=config.evolution.novelty_k,
-        )
+        return _schematic_score(proof, target, regions, behavior_archive, config)
 
     ranked = sorted(proofs, key=score, reverse=True)
     selected: list[Proof] = []
@@ -852,6 +1147,76 @@ def _rank_schematic(
         if len(selected) >= width:
             break
     return tuple(selected)
+
+
+def _closed_score(
+    proof: Proof,
+    target: Formula,
+    regions: tuple[Goal, ...],
+    config: ProplogicConfig,
+) -> tuple[float, float, int, int, int]:
+    proof_conclusion = conclusion(proof)
+    if isinstance(proof_conclusion, Invalid):
+        return (float("-inf"), 0.0, 0, 0, 0)
+    return (
+        total_fitness(proof, target, regions, config).score,
+        best_antecedent_coverage(proof_conclusion, target, regions),
+        -cd_depth(proof),
+        -proof_size(proof),
+        -total_formula_size(proof),
+    )
+
+
+def _schematic_score(
+    proof: Proof,
+    target: Formula,
+    regions: tuple[Goal, ...],
+    behavior_archive: tuple,
+    config: ProplogicConfig,
+) -> float:
+    fitness = total_fitness(proof, target, regions, config)
+    descriptor = behavior_descriptor(proof, fitness.conclusion)
+    coverage = 0.0 if isinstance(fitness.conclusion, Invalid) else best_antecedent_coverage(fitness.conclusion, target, regions)
+    return (
+        lemma_schema_score(fitness, target, regions, descriptor, config)
+        + 100.0 * coverage
+        + 50.0 * novelty_score(descriptor, behavior_archive, k=config.evolution.novelty_k)
+    )
+
+
+def _suffix_closed_score(proof: Proof, suffix: Formula, config: ProplogicConfig) -> tuple[float, float, float, int, int, int]:
+    proof_conclusion = conclusion(proof)
+    if isinstance(proof_conclusion, Invalid):
+        return (float("-inf"), 0.0, 0.0, 0, 0, 0)
+    return (
+        _suffix_candidate_score(proof_conclusion, suffix),
+        antecedent_coverage_score(proof_conclusion, suffix),
+        -assumption_debt(proof_conclusion, suffix, config.fitness),
+        -proof_size(proof),
+        -total_formula_size(proof),
+        -cd_steps(proof),
+    )
+
+
+def _suffix_schematic_score(
+    proof: Proof,
+    suffix: Formula,
+    target: Formula,
+    regions: tuple[Goal, ...],
+    behavior_archive: tuple,
+    config: ProplogicConfig,
+) -> tuple[float, float, float, float, int, int]:
+    proof_conclusion = conclusion(proof)
+    if isinstance(proof_conclusion, Invalid):
+        return (float("-inf"), 0.0, 0.0, 0.0, 0, 0)
+    return (
+        _suffix_candidate_score(proof_conclusion, suffix),
+        antecedent_coverage_score(proof_conclusion, suffix),
+        _schematic_score(proof, target, regions, behavior_archive, config),
+        -assumption_debt(proof_conclusion, suffix, config.fitness),
+        -proof_size(proof),
+        -total_formula_size(proof),
+    )
 
 
 def _shape_key(formula: Formula | Invalid) -> str:
@@ -888,6 +1253,66 @@ def _matches_or_unifies(formula: Formula | Invalid, target: Formula) -> bool:
     if isinstance(formula, Invalid):
         return False
     return formula == target or not isinstance(unify(formula, target), UnifyFailure)
+
+
+def _suffix_candidate_score(formula: Formula | Invalid, suffix: Formula) -> float:
+    if isinstance(formula, Invalid):
+        return 0.0
+    if formula == suffix:
+        return 1.0
+    if not isinstance(unify(formula, suffix), UnifyFailure):
+        return 0.90
+    return best_directed_similarity(formula, suffix, ())
+
+
+def _dedupe_by_conclusion_best(proofs: list[Proof], score) -> tuple[Proof, ...]:
+    best_by_conclusion: dict[Formula | Invalid, Proof] = {}
+    for proof in proofs:
+        proof_conclusion = conclusion(proof)
+        current = best_by_conclusion.get(proof_conclusion)
+        if current is None or score(proof) > score(current):
+            best_by_conclusion[proof_conclusion] = proof
+    return tuple(sorted(best_by_conclusion.values(), key=score, reverse=True))
+
+
+def _suffix_retention_diagnostics(
+    closed: tuple[Proof, ...],
+    schematic: tuple[Proof, ...],
+    kept: tuple[Proof, ...],
+    target: Formula,
+) -> SuffixRetentionDiagnostics:
+    suffixes = implication_spine_suffixes(target)
+    all_candidates = closed + schematic
+    return SuffixRetentionDiagnostics(
+        candidates_seen_by_suffix=_suffix_counts(all_candidates, suffixes),
+        closed_candidates_seen_by_suffix=_suffix_counts(closed, suffixes),
+        schematic_candidates_seen_by_suffix=_suffix_counts(schematic, suffixes),
+        survivors_by_suffix=_suffix_counts(kept, suffixes),
+        best_candidate_by_suffix=_best_candidate_by_suffix(all_candidates, suffixes),
+    )
+
+
+def _suffix_counts(proofs: tuple[Proof, ...], suffixes: tuple[Formula, ...]) -> tuple[tuple[str, int], ...]:
+    return tuple(
+        (
+            pretty(suffix),
+            sum(1 for proof in proofs if _suffix_candidate_score(conclusion(proof), suffix) > 0.0),
+        )
+        for suffix in suffixes
+    )
+
+
+def _best_candidate_by_suffix(proofs: tuple[Proof, ...], suffixes: tuple[Formula, ...]) -> tuple[tuple[str, str], ...]:
+    output: list[tuple[str, str]] = []
+    for suffix in suffixes:
+        candidates = [proof for proof in proofs if _suffix_candidate_score(conclusion(proof), suffix) > 0.0]
+        if not candidates:
+            output.append((pretty(suffix), "none"))
+            continue
+        best = max(candidates, key=lambda proof: _suffix_candidate_score(conclusion(proof), suffix))
+        proof_conclusion = conclusion(best)
+        output.append((pretty(suffix), "invalid" if isinstance(proof_conclusion, Invalid) else pretty(proof_conclusion)))
+    return tuple(output)
 
 
 def _suffix_survivor_counts(proofs: tuple[Proof, ...], target: Formula) -> tuple[tuple[str, int], ...]:

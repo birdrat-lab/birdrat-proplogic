@@ -90,6 +90,11 @@ class EvolutionConfig:
     beam_minor_proof_size_penalty: float = 1.0
     beam_substitution_size_penalty: float = 0.5
     beam_closed_minor_bonus: float = 25.0
+    suffix_closed_keep_per_suffix: int = 3
+    suffix_schematic_keep_per_suffix: int = 3
+    schema_instantiation_pool_size: int = 50
+    schema_instantiation_max_metas: int = 2
+    schema_instantiation_max_attempts_per_proof: int = 100
 
 
 @dataclass(frozen=True)
