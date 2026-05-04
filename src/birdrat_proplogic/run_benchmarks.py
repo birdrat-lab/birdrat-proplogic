@@ -34,6 +34,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--beam-pair-budget", type=int)
     parser.add_argument("--beam-only", action="store_true", help="run only the cascading beam search phases")
     parser.add_argument("--no-beam", action="store_true", help="disable beam seeding and run evolution only")
+    parser.add_argument("--beam-progress-interval", type=float, default=5.0)
+    parser.add_argument("--no-beam-stop-on-exact", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument("--strict", action="store_true", help="return a failing exit code if any selected benchmark is not solved")
     parser.add_argument("--progress-interval", type=int)
@@ -68,10 +70,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  core: {pretty(desugar(benchmark.target))}", flush=True)
         profiler = RuntimeProfiler(enabled=True)
         phases = _search_phases_for_benchmark(suite_name, benchmark)
-        if not args.quiet and suite_name == "expanded-targets":
-            print(_expanded_start_line(benchmark), flush=True)
+        beam_progress_enabled = suite_name == "expanded-targets" and benchmark.config.evolution.beam_enabled and not args.quiet
+        beam_progress = _beam_progress_printer() if beam_progress_enabled else None
+        beam_start = _beam_start_printer() if beam_progress_enabled else None
         if args.beam_only:
-            search = search_beam_only(benchmark.target, benchmark.config, seed=args.seed, profiler=profiler, phases=phases)
+            search = search_beam_only(
+                benchmark.target,
+                benchmark.config,
+                seed=args.seed,
+                profiler=profiler,
+                beam_start_callback=beam_start,
+                beam_progress_callback=beam_progress,
+                beam_progress_interval_seconds=args.beam_progress_interval,
+                phases=phases,
+            )
         else:
             search = search_with_fallback(
                 benchmark.target,
@@ -85,6 +97,9 @@ def main(argv: list[str] | None = None) -> int:
                     if suite_name == "expanded-targets"
                     else None,
                 ),
+                beam_start_callback=beam_start,
+                beam_progress_callback=beam_progress,
+                beam_progress_interval_seconds=args.beam_progress_interval,
                 phases=phases,
             )
         results.append((benchmark, search))
@@ -122,15 +137,6 @@ def _search_phases_for_benchmark(suite_name: str, benchmark: SearchBenchmark):
     if suite_name == "expanded-targets":
         return make_exhaustive_search_phases(benchmark.config)
     return None
-
-
-def _expanded_start_line(benchmark: SearchBenchmark) -> str:
-    evolution = benchmark.config.evolution
-    return (
-        f"  gen 0/{evolution.max_generations}: exhaustive-beam starting "
-        f"width={evolution.beam_width} depth={evolution.beam_max_depth} "
-        f"major_budget={evolution.beam_major_budget} pair_budget={evolution.beam_pair_budget}"
-    )
 
 
 def _selected_suite(args: argparse.Namespace) -> tuple[str, tuple[SearchBenchmark, ...]]:
@@ -212,6 +218,31 @@ def _benchmark_status_line(search) -> str:
         f"best_closed={best_closed} best_schematic={best_schematic} "
         f"time={search.total_runtime_seconds:.1f}s"
     )
+
+
+def _beam_start_printer():
+    def callback(phase) -> None:
+        print(
+            f"  {phase.name}: building beam width={phase.beam_width} "
+            f"depth={phase.beam_max_depth} pair_budget={phase.beam_pair_budget}",
+            flush=True,
+        )
+
+    return callback
+
+
+def _beam_progress_printer():
+    def callback(phase: str, event) -> None:
+        print(
+            f"  beam d{event.depth}/{event.max_depth}: pool={event.pool_size} "
+            f"pairs={event.pair_attempts}/{event.pair_budget} valid={event.valid_products} "
+            f"closed={event.closed_products} schematic={event.schematic_products} "
+            f"kept={event.kept_products} max_depth={event.max_cd_depth} "
+            f"max_cd={event.max_cd_steps} time={event.elapsed_seconds:.1f}s",
+            flush=True,
+        )
+
+    return callback
 
 
 def _benchmark_progress_printer(interval: int, quiet: bool, total_generations: int | None = None):
@@ -345,6 +376,8 @@ def _override_config(benchmark: SearchBenchmark, args: argparse.Namespace) -> Se
         evolution = replace(evolution, stop_on_exact=False)
     if args.no_beam:
         evolution = replace(evolution, beam_enabled=False)
+    if args.no_beam_stop_on_exact:
+        evolution = replace(evolution, beam_stop_on_exact=False)
     return replace(benchmark, config=replace(benchmark.config, evolution=evolution))
 
 

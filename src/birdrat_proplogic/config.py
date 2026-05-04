@@ -74,6 +74,7 @@ class EvolutionConfig:
     beam_max_depth: int = 3
     beam_major_budget: int = 200
     beam_pair_budget: int = 5_000
+    beam_stop_on_exact: bool = False
     beam_prioritized_fraction: float = 1.0
     beam_suffix_fraction: float = 0.0
     beam_exploratory_fraction: float = 0.0

@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import product
 from math import isfinite
-from typing import Iterable
+from time import perf_counter
+from typing import Callable, Iterable
 
 from birdrat_proplogic.config import DEFAULT_CONFIG, ProplogicConfig
 from birdrat_proplogic.dproof import DProofParseError, fresh_axiom
@@ -95,9 +96,27 @@ class BeamSearchResult:
 
 
 @dataclass(frozen=True)
+class BeamProgressEvent:
+    depth: int
+    max_depth: int
+    pool_size: int
+    pair_attempts: int
+    pair_budget: int
+    valid_products: int
+    closed_products: int
+    schematic_products: int
+    kept_products: int
+    max_cd_depth: int
+    max_cd_steps: int
+    elapsed_seconds: float
+    final: bool = False
+
+
+@dataclass(frozen=True)
 class PairChannelResult:
     pairs: tuple[tuple[float, Proof, Proof], ...]
     compatible_minor_candidates: int
+    next_progress_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -108,6 +127,7 @@ class PairSelection:
     suffix_pairs_attempted: int
     exploratory_pairs_attempted: int
     duplicate_pairs_removed: int
+    next_progress_at: float
 
 
 @dataclass(frozen=True)
@@ -146,7 +166,11 @@ def cd_beam_search_result(
     formula_pool: tuple[Formula, ...],
     config: ProplogicConfig = DEFAULT_CONFIG,
     profiler: RuntimeProfiler | None = None,
+    progress_callback: Callable[[BeamProgressEvent], None] | None = None,
+    progress_interval_seconds: float = 5.0,
 ) -> BeamSearchResult:
+    started = perf_counter()
+    next_progress_at = started + max(0.0, progress_interval_seconds)
     profiler = profiler or RuntimeProfiler(enabled=False)
     evolution_config = config.evolution
     width = max(1, evolution_config.beam_width)
@@ -174,7 +198,14 @@ def cd_beam_search_result(
                 config,
                 major_budget=major_budget,
                 pair_budget=pair_budget,
+                depth=depth,
+                max_depth=max_depth,
+                progress_callback=progress_callback,
+                progress_interval_seconds=progress_interval_seconds,
+                started=started,
+                next_progress_at=next_progress_at,
             )
+            next_progress_at = pair_selection.next_progress_at
         pairs = pair_selection.pairs
         profiler.increment("beam.pairs_attempted", len(pairs))
 
@@ -235,27 +266,31 @@ def cd_beam_search_result(
                     config,
                     width,
                 )
-        layers.append(
-            _beam_layer_stats(
-                depth,
-                pair_pool,
-                pairs,
-                new,
-                closed,
-                schematic,
-                kept_closed,
-                kept_schematic,
-                major_budget,
-                target,
-                pair_selection,
-                suffix_diagnostics,
-                schema_diagnostics,
-            )
+        layer_stats = _beam_layer_stats(
+            depth,
+            pair_pool,
+            pairs,
+            new,
+            closed,
+            schematic,
+            kept_closed,
+            kept_schematic,
+            major_budget,
+            target,
+            pair_selection,
+            suffix_diagnostics,
+            schema_diagnostics,
         )
+        layers.append(layer_stats)
+        frontier = kept_closed + kept_schematic
+        if progress_callback is not None:
+            progress_callback(_beam_progress_event(depth, max_depth, pair_pool, pairs, new, frontier, pair_budget, started, final=True))
+        if layer_stats.exact_target_survived_to_population and config.evolution.beam_stop_on_exact:
+            known.extend(frontier)
+            break
         if not new:
             break
 
-        frontier = kept_closed + kept_schematic
         known.extend(frontier)
         behavior_archive = tuple(
             list(behavior_archive)
@@ -329,6 +364,72 @@ def _beam_layer_stats(
         kept_ax2_fraction=kept_fractions[1],
         kept_ax3_fraction=kept_fractions[2],
     )
+
+
+def _beam_progress_event(
+    depth: int,
+    max_depth: int,
+    pair_pool: tuple[Proof, ...],
+    pairs: tuple | list,
+    products: tuple[Proof, ...] | list[Proof],
+    kept: tuple[Proof, ...],
+    pair_budget: int,
+    started: float,
+    *,
+    final: bool,
+) -> BeamProgressEvent:
+    closed, schematic = _partition_valid(tuple(products))
+    measured = kept or tuple(products) or pair_pool
+    return BeamProgressEvent(
+        depth=depth,
+        max_depth=max_depth,
+        pool_size=len(pair_pool),
+        pair_attempts=len(pairs),
+        pair_budget=pair_budget,
+        valid_products=len(products),
+        closed_products=len(closed),
+        schematic_products=len(schematic),
+        kept_products=len(kept),
+        max_cd_depth=max((cd_depth(proof) for proof in measured), default=0),
+        max_cd_steps=max((cd_steps(proof) for proof in measured), default=0),
+        elapsed_seconds=perf_counter() - started,
+        final=final,
+    )
+
+
+def _maybe_report_pair_progress(
+    progress_callback: Callable[[BeamProgressEvent], None] | None,
+    depth: int,
+    max_depth: int,
+    pair_pool: tuple[Proof, ...],
+    pair_attempts: int,
+    pair_budget: int,
+    started: float,
+    next_progress_at: float,
+    progress_interval_seconds: float,
+) -> float:
+    if progress_callback is None or progress_interval_seconds <= 0:
+        return next_progress_at
+    now = perf_counter()
+    if now < next_progress_at:
+        return next_progress_at
+    progress_callback(
+        BeamProgressEvent(
+            depth=depth,
+            max_depth=max_depth,
+            pool_size=len(pair_pool),
+            pair_attempts=pair_attempts,
+            pair_budget=pair_budget,
+            valid_products=0,
+            closed_products=0,
+            schematic_products=0,
+            kept_products=0,
+            max_cd_depth=max((cd_depth(proof) for proof in pair_pool), default=0),
+            max_cd_steps=max((cd_steps(proof) for proof in pair_pool), default=0),
+            elapsed_seconds=now - started,
+        )
+    )
+    return now + progress_interval_seconds
 
 
 def axiom_family_fractions(proofs: tuple[Proof, ...]) -> tuple[float, float, float]:
@@ -424,7 +525,15 @@ def candidate_pairs(
     *,
     major_budget: int,
     pair_budget: int,
+    depth: int = 0,
+    max_depth: int = 0,
+    progress_callback: Callable[[BeamProgressEvent], None] | None = None,
+    progress_interval_seconds: float = 5.0,
+    started: float | None = None,
+    next_progress_at: float | None = None,
 ) -> PairSelection:
+    started = perf_counter() if started is None else started
+    next_progress_at = started + max(0.0, progress_interval_seconds) if next_progress_at is None else next_progress_at
     budgets = _monotone_channel_budgets(
         pair_budget,
         config.evolution.beam_prioritized_fraction,
@@ -438,7 +547,15 @@ def candidate_pairs(
         config,
         major_budget=major_budget,
         pair_budget=budgets[0],
+        depth=depth,
+        max_depth=max_depth,
+        full_pair_budget=pair_budget,
+        progress_callback=progress_callback,
+        progress_interval_seconds=progress_interval_seconds,
+        started=started,
+        next_progress_at=next_progress_at,
     )
+    next_progress_at = strict_result.next_progress_at
     strict_keys = _pair_keys(strict_result.pairs)
     suffix_result = suffix_pairs(
         proof_pool,
@@ -448,7 +565,15 @@ def candidate_pairs(
         major_budget=major_budget,
         pair_budget=budgets[1],
         excluded_pairs=strict_keys,
+        depth=depth,
+        max_depth=max_depth,
+        full_pair_budget=pair_budget,
+        progress_callback=progress_callback,
+        progress_interval_seconds=progress_interval_seconds,
+        started=started,
+        next_progress_at=next_progress_at,
     )
+    next_progress_at = suffix_result.next_progress_at
     strict_suffix_keys = strict_keys | _pair_keys(suffix_result.pairs)
     exploratory_result = exploratory_pairs(
         proof_pool,
@@ -458,7 +583,15 @@ def candidate_pairs(
         major_budget=major_budget,
         pair_budget=budgets[2],
         excluded_pairs=strict_suffix_keys,
+        depth=depth,
+        max_depth=max_depth,
+        full_pair_budget=pair_budget,
+        progress_callback=progress_callback,
+        progress_interval_seconds=progress_interval_seconds,
+        started=started,
+        next_progress_at=next_progress_at,
     )
+    next_progress_at = exploratory_result.next_progress_at
     selected, duplicates = _dedupe_channel_pairs(
         (
             ("strict", strict_result.pairs),
@@ -478,6 +611,7 @@ def candidate_pairs(
         suffix_pairs_attempted=sum(1 for channel, _priority, _major, _minor in selected if channel == "suffix"),
         exploratory_pairs_attempted=sum(1 for channel, _priority, _major, _minor in selected if channel == "exploratory"),
         duplicate_pairs_removed=duplicates,
+        next_progress_at=next_progress_at,
     )
 
 
@@ -509,7 +643,17 @@ def prioritized_pairs(
     *,
     major_budget: int,
     pair_budget: int,
+    depth: int = 0,
+    max_depth: int = 0,
+    full_pair_budget: int | None = None,
+    progress_callback: Callable[[BeamProgressEvent], None] | None = None,
+    progress_interval_seconds: float = 5.0,
+    started: float | None = None,
+    next_progress_at: float | None = None,
 ) -> PairChannelResult:
+    started = perf_counter() if started is None else started
+    next_progress_at = started + max(0.0, progress_interval_seconds) if next_progress_at is None else next_progress_at
+    full_pair_budget = pair_budget if full_pair_budget is None else full_pair_budget
     index = build_minor_shape_index(proof_pool)
     majors = sorted(
         (proof for proof in proof_pool if implication_major_parts(proof) is not None),
@@ -530,11 +674,22 @@ def prioritized_pairs(
             priority = pair_priority_with_config(major, minor, target, regions, config)
             if isfinite(priority):
                 pairs.append((priority, major, minor))
+        next_progress_at = _maybe_report_pair_progress(
+            progress_callback,
+            depth,
+            max_depth,
+            proof_pool,
+            len(pairs),
+            full_pair_budget,
+            started,
+            next_progress_at,
+            progress_interval_seconds,
+        )
 
     ranked = sorted(pairs, key=lambda item: item[0], reverse=True)
     if pair_budget <= 0:
-        return PairChannelResult((), compatible_count)
-    return PairChannelResult(tuple(ranked[:pair_budget]), compatible_count)
+        return PairChannelResult((), compatible_count, next_progress_at)
+    return PairChannelResult(tuple(ranked[:pair_budget]), compatible_count, next_progress_at)
 
 
 def suffix_pairs(
@@ -546,12 +701,22 @@ def suffix_pairs(
     major_budget: int,
     pair_budget: int,
     excluded_pairs: set[tuple[Proof, Proof]] | None = None,
+    depth: int = 0,
+    max_depth: int = 0,
+    full_pair_budget: int | None = None,
+    progress_callback: Callable[[BeamProgressEvent], None] | None = None,
+    progress_interval_seconds: float = 5.0,
+    started: float | None = None,
+    next_progress_at: float | None = None,
 ) -> PairChannelResult:
+    started = perf_counter() if started is None else started
+    next_progress_at = started + max(0.0, progress_interval_seconds) if next_progress_at is None else next_progress_at
+    full_pair_budget = pair_budget if full_pair_budget is None else full_pair_budget
     if pair_budget <= 0:
-        return PairChannelResult((), 0)
+        return PairChannelResult((), 0, next_progress_at)
     suffixes = implication_spine_suffixes(target)
     if not suffixes:
-        return PairChannelResult((), 0)
+        return PairChannelResult((), 0, next_progress_at)
     per_suffix = max(1, pair_budget // len(suffixes))
     output: list[tuple[float, Proof, Proof]] = []
     compatible_total = 0
@@ -577,10 +742,21 @@ def suffix_pairs(
                 priority = suffix_pair_priority(major, minor, suffix, config)
                 if isfinite(priority):
                     suffix_output.append((priority, major, minor))
+            next_progress_at = _maybe_report_pair_progress(
+                progress_callback,
+                depth,
+                max_depth,
+                proof_pool,
+                len(output) + len(suffix_output),
+                full_pair_budget,
+                started,
+                next_progress_at,
+                progress_interval_seconds,
+            )
         output.extend(
             sorted(suffix_output, key=lambda item: item[0], reverse=True)[:per_suffix]
         )
-    return PairChannelResult(_dedupe_ranked_pairs(tuple(output), pair_budget), compatible_total)
+    return PairChannelResult(_dedupe_ranked_pairs(tuple(output), pair_budget), compatible_total, next_progress_at)
 
 
 def exploratory_pairs(
@@ -592,9 +768,19 @@ def exploratory_pairs(
     major_budget: int,
     pair_budget: int,
     excluded_pairs: set[tuple[Proof, Proof]] | None = None,
+    depth: int = 0,
+    max_depth: int = 0,
+    full_pair_budget: int | None = None,
+    progress_callback: Callable[[BeamProgressEvent], None] | None = None,
+    progress_interval_seconds: float = 5.0,
+    started: float | None = None,
+    next_progress_at: float | None = None,
 ) -> PairChannelResult:
+    started = perf_counter() if started is None else started
+    next_progress_at = started + max(0.0, progress_interval_seconds) if next_progress_at is None else next_progress_at
+    full_pair_budget = pair_budget if full_pair_budget is None else full_pair_budget
     if pair_budget <= 0:
-        return PairChannelResult((), 0)
+        return PairChannelResult((), 0, next_progress_at)
     index = build_minor_shape_index(proof_pool)
     majors = sorted(
         (proof for proof in proof_pool if implication_major_parts(proof) is not None),
@@ -617,7 +803,18 @@ def exploratory_pairs(
             if not isfinite(priority):
                 continue
             pairs.append((priority, major, minor))
-    return PairChannelResult(_dedupe_ranked_pairs(tuple(pairs), pair_budget), compatible_count)
+        next_progress_at = _maybe_report_pair_progress(
+            progress_callback,
+            depth,
+            max_depth,
+            proof_pool,
+            len(pairs),
+            full_pair_budget,
+            started,
+            next_progress_at,
+            progress_interval_seconds,
+        )
+    return PairChannelResult(_dedupe_ranked_pairs(tuple(pairs), pair_budget), compatible_count, next_progress_at)
 
 
 def suffix_major_priority(major: Proof, suffix: Formula, config: ProplogicConfig) -> float:

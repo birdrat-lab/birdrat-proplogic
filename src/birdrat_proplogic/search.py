@@ -6,7 +6,7 @@ from time import perf_counter
 from typing import Callable
 
 from birdrat_proplogic.archive import empty_archive
-from birdrat_proplogic.beam import cd_beam_search_result
+from birdrat_proplogic.beam import BeamProgressEvent, cd_beam_search_result
 from birdrat_proplogic.config import ProplogicConfig
 from birdrat_proplogic.evolution import EvolutionResult, GenerationStats, ScoredProof, evolve
 from birdrat_proplogic.fitness import FitnessResult, total_fitness
@@ -132,6 +132,9 @@ def search_with_fallback(
     config: ProplogicConfig,
     seed: int | None = None,
     progress_callback: Callable[[str, GenerationStats, float], None] | None = None,
+    beam_start_callback: Callable[[SearchPhase], None] | None = None,
+    beam_progress_callback: Callable[[str, BeamProgressEvent], None] | None = None,
+    beam_progress_interval_seconds: float = 5.0,
     profiler: RuntimeProfiler | None = None,
     phases: tuple[SearchPhase, ...] | None = None,
 ) -> SearchResult:
@@ -142,6 +145,8 @@ def search_with_fallback(
         phase_seed = None if seed is None else seed + index * 1_000_003
         phase_config = _config_for_phase(config, phase)
         phase_started = perf_counter()
+        if beam_start_callback is not None:
+            beam_start_callback(phase)
         result = evolve(
             target,
             phase_config,
@@ -151,6 +156,12 @@ def search_with_fallback(
                 if progress_callback is None
                 else lambda stats, elapsed, phase_name=phase.name: progress_callback(phase_name, stats, elapsed)
             ),
+            beam_progress_callback=(
+                None
+                if beam_progress_callback is None
+                else lambda event, phase_name=phase.name: beam_progress_callback(phase_name, event)
+            ),
+            beam_progress_interval_seconds=beam_progress_interval_seconds,
             profiler=profiler,
         )
         runtime = perf_counter() - phase_started
@@ -170,6 +181,9 @@ def search_beam_only(
     config: ProplogicConfig,
     seed: int | None = None,
     profiler: RuntimeProfiler | None = None,
+    beam_start_callback: Callable[[SearchPhase], None] | None = None,
+    beam_progress_callback: Callable[[str, BeamProgressEvent], None] | None = None,
+    beam_progress_interval_seconds: float = 5.0,
     phases: tuple[SearchPhase, ...] | None = None,
 ) -> SearchResult:
     del seed
@@ -179,7 +193,19 @@ def search_beam_only(
     for phase in phases or make_default_search_phases(config):
         phase_config = _config_for_phase(config, phase)
         phase_started = perf_counter()
-        result = _beam_only_phase_result(target, phase_config, profiler)
+        if beam_start_callback is not None:
+            beam_start_callback(phase)
+        result = _beam_only_phase_result(
+            target,
+            phase_config,
+            profiler,
+            beam_progress_callback=(
+                None
+                if beam_progress_callback is None
+                else lambda event, phase_name=phase.name: beam_progress_callback(phase_name, event)
+            ),
+            beam_progress_interval_seconds=beam_progress_interval_seconds,
+        )
         runtime = perf_counter() - phase_started
         report = _phase_report(phase.name, result, phase_config, runtime)
         reports.append(report)
@@ -196,6 +222,8 @@ def _beam_only_phase_result(
     target: SurfaceFormula,
     config: ProplogicConfig,
     profiler: RuntimeProfiler,
+    beam_progress_callback: Callable[[BeamProgressEvent], None] | None = None,
+    beam_progress_interval_seconds: float = 5.0,
 ) -> EvolutionResult:
     with profiler.section("generate_regions"):
         regions = extract_goals(target, config)
@@ -204,7 +232,15 @@ def _beam_only_phase_result(
     with profiler.section("formula_pool_construction"):
         formula_pool = formula_pool_from_target(core_target, region_targets)
     with profiler.section("beam.total"):
-        beam_result = cd_beam_search_result(core_target, regions, formula_pool, config, profiler=profiler)
+        beam_result = cd_beam_search_result(
+            core_target,
+            regions,
+            formula_pool,
+            config,
+            profiler=profiler,
+            progress_callback=beam_progress_callback,
+            progress_interval_seconds=beam_progress_interval_seconds,
+        )
     population = beam_result.proofs
     scored = tuple(
         sorted(
@@ -216,7 +252,15 @@ def _beam_only_phase_result(
     if not scored:
         # Disabled beam can produce an empty pool. Re-enable shallow seeding by using a zero-depth beam.
         fallback_config = replace(config, evolution=replace(config.evolution, beam_enabled=True, beam_max_depth=0))
-        beam_result = cd_beam_search_result(core_target, regions, formula_pool, fallback_config, profiler=profiler)
+        beam_result = cd_beam_search_result(
+            core_target,
+            regions,
+            formula_pool,
+            fallback_config,
+            profiler=profiler,
+            progress_callback=beam_progress_callback,
+            progress_interval_seconds=beam_progress_interval_seconds,
+        )
         population = beam_result.proofs
         scored = tuple(
             sorted(
@@ -334,6 +378,8 @@ def _beam_provenance(result: EvolutionResult) -> tuple[str | None, int | None]:
     for layer in result.beam_diagnostics.layer_counts:
         if layer.schema_instantiation_exact_target:
             return "schema-instantiation", layer.depth
+        if layer.exact_target_generated_in_beam:
+            return "beam", layer.depth
         if layer.exact_target_survived_to_population:
             return "beam", layer.depth
     return None, None

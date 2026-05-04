@@ -37,6 +37,7 @@ def test_expanded_target_benchmarks_are_separate_diagnostic_suite() -> None:
     assert benchmarks[0].config.evolution.beam_max_depth == 7
     assert benchmarks[0].config.evolution.beam_major_budget == 10_000
     assert benchmarks[0].config.evolution.beam_pair_budget == 100_000
+    assert benchmarks[0].config.evolution.beam_stop_on_exact
     assert benchmarks[1].config.evolution.population_size == 100
     assert benchmarks[1].config.evolution.max_generations == 250
     assert benchmarks[1].config.evolution.diagnostics_interval == 1
@@ -44,6 +45,7 @@ def test_expanded_target_benchmarks_are_separate_diagnostic_suite() -> None:
     assert benchmarks[1].config.evolution.beam_max_depth == 8
     assert benchmarks[1].config.evolution.beam_major_budget == 20_000
     assert benchmarks[1].config.evolution.beam_pair_budget == 200_000
+    assert benchmarks[1].config.evolution.beam_stop_on_exact
     assert all("known proof" not in benchmark.notes.lower() for benchmark in benchmarks)
 
 
@@ -72,6 +74,9 @@ def test_run_benchmarks_parser_accepts_suite_flags_and_overrides() -> None:
             "--beam-major-budget",
             "17",
             "--beam-only",
+            "--beam-progress-interval",
+            "2.5",
+            "--no-beam-stop-on-exact",
             "--strict",
         ]
     )
@@ -81,6 +86,8 @@ def test_run_benchmarks_parser_accepts_suite_flags_and_overrides() -> None:
     assert args.beam_pair_budget == 123
     assert args.beam_major_budget == 17
     assert args.beam_only
+    assert args.beam_progress_interval == 2.5
+    assert args.no_beam_stop_on_exact
     assert args.strict
 
 
@@ -175,5 +182,62 @@ def test_expanded_benchmark_cli_prints_generation_progress_with_total(capsys) ->
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "gen 0/1: exhaustive-beam starting" in output
+    assert "exhaustive-beam: building beam width=2 depth=0 pair_budget=1" in output
     assert "gen 0/1: exhaustive-beam best=" in output
+
+
+def test_expanded_benchmark_cli_prints_beam_layer_progress(capsys) -> None:
+    exit_code = main(
+        [
+            "--expanded-targets",
+            "--no-report",
+            "--max-generations",
+            "1",
+            "--population-size",
+            "2",
+            "--beam-width",
+            "2",
+            "--beam-max-depth",
+            "1",
+            "--beam-major-budget",
+            "2",
+            "--beam-pair-budget",
+            "1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "beam d0/1: pool=" in output
+    assert "pairs=" in output
+    assert "valid=" in output
+    assert "kept=" in output
+    assert "max_cd=" in output
+
+
+def test_small_target_cli_does_not_print_beam_phase_progress(capsys) -> None:
+    exit_code = main(
+        [
+            "--small-targets",
+            "--no-report",
+            "--max-generations",
+            "1",
+            "--population-size",
+            "2",
+            "--beam-width",
+            "2",
+            "--beam-max-depth",
+            "1",
+            "--beam-major-budget",
+            "2",
+            "--beam-pair-budget",
+            "1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "building beam" not in output
+    assert "beam d0/" not in output

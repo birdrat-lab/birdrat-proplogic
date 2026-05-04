@@ -6,7 +6,7 @@ from time import perf_counter
 from typing import Callable
 
 from birdrat_proplogic.archive import ProofArchive, empty_archive, update_archive
-from birdrat_proplogic.beam import BeamDiagnostics, cd_beam_search_result
+from birdrat_proplogic.beam import BeamDiagnostics, BeamProgressEvent, cd_beam_search_result
 from birdrat_proplogic.config import DEFAULT_CONFIG, ProplogicConfig
 from birdrat_proplogic.crossover import crossover_proof
 from birdrat_proplogic.fitness import FitnessResult, total_fitness
@@ -89,6 +89,8 @@ def evolve(
     rng: Random | None = None,
     seed: int | None = None,
     progress_callback: Callable[[GenerationStats, float], None] | None = None,
+    beam_progress_callback: Callable[[BeamProgressEvent], None] | None = None,
+    beam_progress_interval_seconds: float = 5.0,
     profiler: RuntimeProfiler | None = None,
 ) -> EvolutionResult:
     phase_started = perf_counter()
@@ -104,7 +106,15 @@ def evolve(
     with profiler.section("formula_pool_construction"):
         formula_pool = formula_pool_from_target(core_target, region_targets)
     with profiler.section("beam.total"):
-        beam_result = cd_beam_search_result(core_target, regions, formula_pool, active_config, profiler=profiler)
+        beam_result = cd_beam_search_result(
+            core_target,
+            regions,
+            formula_pool,
+            active_config,
+            profiler=profiler,
+            progress_callback=beam_progress_callback,
+            progress_interval_seconds=beam_progress_interval_seconds,
+        )
     beam_pool = beam_result.proofs
     population = tuple(
         initialize_population_from_target(
