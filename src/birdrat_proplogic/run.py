@@ -109,6 +109,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diagnostics-interval", type=int)
     parser.add_argument("--beam-width", type=int)
     parser.add_argument("--beam-max-depth", type=int)
+    parser.add_argument("--beam-major-budget", type=int)
+    parser.add_argument("--beam-pair-budget", type=int)
     parser.add_argument("--no-beam", action="store_true")
     parser.add_argument("--archive-path")
     parser.add_argument("--no-archive", action="store_true")
@@ -146,6 +148,8 @@ def _config_from_args(args: argparse.Namespace) -> ProplogicConfig:
         ("diagnostics_interval", "diagnostics_interval"),
         ("beam_width", "beam_width"),
         ("beam_max_depth", "beam_max_depth"),
+        ("beam_major_budget", "beam_major_budget"),
+        ("beam_pair_budget", "beam_pair_budget"),
     ):
         value = getattr(args, arg_name)
         if value is not None:
@@ -197,10 +201,12 @@ def _diagnostic_lines(result: EvolutionResult) -> list[str]:
             f"closed={item.closed_fraction:.2f}, schematic={item.schematic_fraction:.2f}, "
             f"behaviors={item.unique_behavior_count}, behavior_archive={item.behavior_archive_size}, "
             f"schema_archive={item.schema_archive_size}, immigrants={item.random_immigrant_count}, "
-            f"beam={item.beam_pool_size}, "
+            f"beam={item.beam_pool_size}, beam_pairs={item.beam_pair_attempts}/{item.beam_pair_budget}, "
+            f"beam_valid={item.beam_valid_products}, "
             f"mean_cd={item.mean_cd_steps:.2f}, mean_substantive_cd={item.mean_substantive_cd_steps:.2f}, "
             f"mean_size={item.mean_proof_size:.2f}, mean_formula={item.mean_formula_size:.2f}, "
-            f"best_conclusion={item.best_conclusion}"
+            f"best_conclusion={item.best_conclusion}, "
+            f"beam_layers={';'.join(item.beam_layer_counts) if item.beam_layer_counts else 'none'}"
         )
         for item in selected
     ]

@@ -72,6 +72,8 @@ class EvolutionConfig:
     beam_enabled: bool = True
     beam_width: int = 25
     beam_max_depth: int = 3
+    beam_major_budget: int = 200
+    beam_pair_budget: int = 5_000
 
 
 @dataclass(frozen=True)

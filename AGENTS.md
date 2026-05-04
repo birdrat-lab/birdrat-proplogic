@@ -1,4 +1,4 @@
-# AGENTS.md — birdrat-proplogic Identity / Quality-Diversity Update
+# AGENTS.md — birdrat-proplogic: Search Benchmark Suite and Target-Directed Beam Search
 
 ## Project purpose
 
@@ -8,7 +8,7 @@ The project searches for Hilbert-style proofs over the Łukasiewicz/Church `P₂
 
 This is not a general Lean tactic prover. Do not add general Lean automation. Do not use `simp`, `tauto`, `aesop`, `omega`, Mathlib automation, or native Lean proof search to bypass the restricted proof system.
 
-The current priority is not Lean integration. The current priority is to make the internal proof-search substrate competent on small `P₂ + CD` benchmarks.
+The current priority is not Lean integration. The current priority is to make the internal `P₂ + CD` proof-search substrate competent on small search benchmarks.
 
 ---
 
@@ -89,7 +89,7 @@ A ↔ B := (A → B) ∧ (B → A)
 Important consequence:
 
 ```text
-a ∧ b → a
+p ∧ q → p
 ```
 
 is not a primitive projection rule.
@@ -97,81 +97,40 @@ is not a primitive projection rule.
 It desugars to:
 
 ```text
-¬(a → ¬b) → a
+¬(p → ¬q) → p
 ```
 
 This is a nontrivial theorem in the `P₂ + CD` system. Do not treat surface conjunction elimination as a primitive proof rule.
 
 ---
 
-## Immediate benchmark strategy
-
-Do not use encoded conjunction examples as the first correctness tests.
-
-Avoid using these as the first proof-search benchmarks:
-
-```text
-a ∧ b → a
-a ∧ b → b
-a ∧ b → b ∧ a
-```
-
-They look simple in surface syntax, but under the encoding of conjunction they become nontrivial classical theorems.
-
-Start with smaller Hilbert/CD benchmarks:
-
-```text
-p → q → p
-p → p
-(p → q) → p → q
-```
-
-The first non-axiom benchmark should be identity:
-
-```text
-p → p
-```
-
-A known condensed-detachment proof of identity from `Ax1` and `Ax2` is:
-
-```text
-DD211
-```
-
-where:
-
-```text
-1 = Ax1
-2 = Ax2
-3 = Ax3
-D = condensed detachment
-```
-
-`DD211` parses as:
-
-```text
-D(D(2, 1), 1)
-```
-
-An expanded proof shape is:
-
-```text
-1. ψ → (φ → ψ)                                      Ax1
-2. ψ → ((φ → ψ) → ψ)                               Ax1
-3. (ψ → ((φ → ψ) → ψ)) → ((ψ → (φ → ψ)) → (ψ → ψ)) Ax2
-4. (ψ → (φ → ψ)) → (ψ → ψ)                         CD
-5. ψ → ψ                                           CD
-```
-
-The system should be able to verify this proof before attempting encoded conjunction.
-
----
-
 ## Current diagnostic conclusion
 
-The search can now produce valid Hilbert/CD proof artifacts, but it tends to plateau on compact schematic lemmas rather than closed proofs of the input theorem.
+The system can now find a proof of the identity theorem:
 
-Examples of plateau families observed so far:
+```text
+p → p
+```
+
+using the evolutionary loop when seeded with a CD beam.
+
+This is a real milestone.
+
+However, attempting encoded conjunction projection:
+
+```text
+p ∧ q → p
+```
+
+is still premature. Under the project’s encoding, this is:
+
+```text
+¬(p → ¬q) → p
+```
+
+and the current search still tends to plateau on compact schematic lemmas instead of closed target proofs.
+
+Observed schematic plateau examples include:
 
 ```text
 (¬?p → ¬b) → b → ?p
@@ -179,11 +138,522 @@ Examples of plateau families observed so far:
 ((¬?r → ¬b) → b) → (¬?r → ¬b) → ?r
 
 (b → ?p) → b → ?p
+
+(¬?p3 → ¬(q → p → q)) → ?p3
 ```
 
-These are often legitimate schematic theorems. They are not necessarily bad. The issue is that they are not closed proofs of the user-provided target.
+These are often legitimate Hilbert-style theorem schemata. They are not necessarily bad. The issue is that they are not closed proofs of the user-provided target.
 
-Do not keep adding one-off penalties for each new bad-looking proof shape. The repeated plateaus indicate an architectural issue: schematic theorem discovery and closed target proof search are currently competing in the same survival channel.
+Do not keep adding one-off penalties for each new bad-looking proof shape. The repeated plateaus indicate an architectural issue: schematic theorem discovery and closed target proof search are still competing in the same survival channel.
+
+---
+
+## Important benchmark policy
+
+Do **not** hardcode known proofs.
+
+Do **not** build the demo around verifying known proof strings.
+
+Do **not** seed the search with external proof strings.
+
+The benchmark suite should consist of theorem targets only. The search system must attempt to find proofs of those targets using the internal proof search machinery.
+
+It is acceptable that these targets were selected because they are known externally to have short `P₂ + CD` proofs. But the implementation should not use the known proofs during search, scoring, initialization, benchmarking, or verification.
+
+The purpose of the benchmark suite is:
+
+```text
+Given only the theorem target, can the tool find a proof?
+```
+
+not:
+
+```text
+Can the tool replay a known proof?
+```
+
+---
+
+## Immediate benchmark strategy
+
+Do not use encoded conjunction examples as the first proof-search benchmark suite.
+
+Avoid using these as the first targets for search validation:
+
+```text
+p ∧ q → p
+p ∧ q → q
+p ∧ q → q ∧ p
+```
+
+They look simple in surface syntax, but under the encoded conjunction definition they are nontrivial classical theorems.
+
+The next milestone is to build a small benchmark suite of target formulas that are expected to have short `P₂ + CD` proofs.
+
+The system should search for these proofs itself.
+
+---
+
+## Five-target search benchmark suite
+
+Add a small benchmark suite of theorem targets. These are deliberately small and are intended to become regression tests and search calibration targets.
+
+Do not include proof strings in the benchmark definitions.
+
+Each benchmark should include:
+
+```text
+name
+surface/core target formula
+optional notes
+search configuration
+expected status under current search
+```
+
+It should not include a hardcoded proof.
+
+---
+
+### Benchmark 1: Identity
+
+Target:
+
+```text
+p → p
+```
+
+Why it matters:
+
+```text
+First non-axiom theorem. Confirms that the CD beam and evolutionary loop can construct a basic Hilbert proof rather than only axiom instances.
+```
+
+Expected near-term status:
+
+```text
+Should be found by the current beam/evolution pipeline.
+```
+
+---
+
+### Benchmark 2: Syllogism / functoriality
+
+Target:
+
+```text
+(p → q) → ((r → p) → (r → q))
+```
+
+Equivalent right-associated form:
+
+```text
+(p → q) → (r → p) → r → q
+```
+
+Why it matters:
+
+```text
+Tests composition through Ax2. This theorem says implication can be transported through a context.
+```
+
+Expected near-term status:
+
+```text
+Should be a plausible next target after identity.
+```
+
+---
+
+### Benchmark 3: Classical negation / explosion-like theorem
+
+Target:
+
+```text
+¬p → p → q
+```
+
+Why it matters:
+
+```text
+Uses Ax3. Tests whether the system handles classical negation/contraposition-style reasoning rather than only Ax1/Ax2 implicational reasoning.
+```
+
+Expected near-term status:
+
+```text
+May require better target-directed CD pair selection.
+```
+
+---
+
+### Benchmark 4: Contraction
+
+Target:
+
+```text
+(p → p → q) → p → q
+```
+
+Why it matters:
+
+```text
+Tests duplicate antecedent handling. This is a useful benchmark for Hilbert-style proof search because contraction is not a primitive rule.
+```
+
+Expected near-term status:
+
+```text
+May require more than the shallow identity configuration.
+```
+
+---
+
+### Benchmark 5: Distribution/application
+
+Target:
+
+```text
+(p → q) → (p → q → r) → p → r
+```
+
+Why it matters:
+
+```text
+Tests a slightly deeper Ax2 pattern. This is a more demanding benchmark than identity and should expose whether the beam can construct useful multi-step implications.
+```
+
+Expected near-term status:
+
+```text
+Likely requires beam preselection before large beam widths become practical.
+```
+
+---
+
+## Benchmark command
+
+Add a benchmark command such as:
+
+```bash
+PYTHONPATH=src python -m birdrat_proplogic.run_benchmarks --small-targets
+```
+
+For each benchmark theorem, report:
+
+```text
+name
+target formula
+whether search found an exact proof
+best closed candidate
+best schematic candidate
+best novelty candidate
+best score
+target similarity
+proof CD steps
+proof CD depth
+proof size
+formula size
+runtime
+beam width
+beam max depth
+beam pair attempts
+beam valid products
+population size
+generations
+```
+
+The benchmark command should run the actual search. It should not replay or verify hardcoded proof strings.
+
+The immediate goal is:
+
+```text
+Can the system independently find proofs for a small set of known-small target formulas?
+```
+
+not:
+
+```text
+Can it solve encoded conjunction?
+```
+
+---
+
+## Target-directed CD pair preselection
+
+The current beam search is too expensive when `beam-width` grows because it tries too many ordered CD pairs.
+
+Avoid the naive pattern:
+
+```python
+for major in pair_pool:
+    for minor in pair_pool:
+        try_make_cd(major, minor)
+```
+
+This becomes effectively quadratic in the pair-pool size.
+
+Increasing beam width from 80 to 500 can cause roughly:
+
+```text
+(500 / 80)^2 ≈ 39×
+```
+
+more pair attempts per beam layer, and the actual pair pool may be larger than the nominal width because it includes seeds, known proofs, and frontier proofs.
+
+Before increasing beam widths substantially, add preselection.
+
+---
+
+## CD pair-selection heuristic
+
+A CD step proves `B` when:
+
+```text
+major proves A → B
+minor proves A
+```
+
+Therefore, for a target `T`, good major candidates are not merely formulas globally similar to `T`.
+
+A good major is an implication whose consequent is close to the target or to a generated region.
+
+### Major candidate priority
+
+Add:
+
+```python
+implication_major_parts(proof) -> tuple[Formula, Formula] | None
+```
+
+If:
+
+```text
+conclusion(proof) = A → B
+```
+
+then return:
+
+```text
+(A, B)
+```
+
+Otherwise return `None`.
+
+Add:
+
+```python
+major_priority(major, target, regions) -> float
+```
+
+Major priority should reward:
+
+```text
+- consequent exactly equals target
+- consequent unifies with target
+- consequent exactly equals a generated region
+- consequent unifies with a generated region
+- consequent has high directed similarity to target/regions
+- consequent has the same final implication-spine head as target/regions
+```
+
+Major priority should penalize:
+
+```text
+- large antecedent A
+- large proof size
+- many CD steps
+- large formula size
+- purely vacuous weakening patterns
+```
+
+Sketch:
+
+```python
+def major_priority(major, target, regions):
+    parts = implication_major_parts(major)
+    if parts is None:
+        return float("-inf")
+
+    antecedent, consequent = parts
+
+    return (
+        1000.0 * best_consequent_similarity(consequent, target, regions)
+        + 500.0 * int(unifies_with_any(consequent, [target, *regions]))
+        - 2.0 * formula_size(antecedent)
+        - 1.0 * proof_size(major)
+        - 5.0 * cd_steps(major)
+    )
+```
+
+Weights can be configuration values.
+
+---
+
+## Minor candidate compatibility
+
+Given a major antecedent `A`, do not try every possible minor.
+
+A minor candidate is useful only if its conclusion can unify with `A`.
+
+Add a coarse shape index for minor conclusions.
+
+Suggested shape categories:
+
+```text
+Meta
+Atom(name)
+Not
+Imp
+Other/Invalid
+```
+
+Compatibility heuristic:
+
+```text
+A is Meta:
+  can try many minor shapes
+
+A is Atom(name):
+  try Atom(name) and schematic/meta-compatible candidates
+
+A is Not(...):
+  try Not(...) and schematic/meta-compatible candidates
+
+A is Imp(...):
+  try Imp(...) and schematic/meta-compatible candidates
+```
+
+This index does not need to be complete. It is a preselection heuristic. The actual `unify` call remains the final authority.
+
+Add:
+
+```python
+compatible_minor_candidates(antecedent, proof_pool, index) -> Iterable[Proof]
+```
+
+Then filter/rank by actual unification.
+
+---
+
+## Pair priority
+
+Add:
+
+```python
+pair_priority(major, minor, target, regions) -> float
+```
+
+It should:
+
+```text
+1. require major conclusion to be implication-shaped
+2. require major antecedent to unify with minor conclusion
+3. reward high major_priority
+4. penalize large minor proof
+5. penalize large substitution terms
+6. optionally reward closed minors when target search is closed
+```
+
+Sketch:
+
+```python
+def pair_priority(major, minor, target, regions):
+    parts = implication_major_parts(major)
+    if parts is None:
+        return float("-inf")
+
+    antecedent, consequent = parts
+    minor_conclusion = conclusion(minor)
+
+    sigma = unify(antecedent, minor_conclusion)
+    if sigma fails:
+        return float("-inf")
+
+    return (
+        major_priority(major, target, regions)
+        - 1.0 * proof_size(minor)
+        - 0.5 * substitution_size(sigma)
+    )
+```
+
+---
+
+## Beam pair budget
+
+Add a configuration option such as:
+
+```text
+beam_pair_budget
+```
+
+The beam should try only the top-ranked candidate pairs per layer.
+
+Example:
+
+```text
+beam_pair_budget = 5000
+```
+
+Instead of:
+
+```text
+try all O(n²) ordered pairs
+```
+
+do:
+
+```text
+rank plausible pairs
+try top beam_pair_budget pairs
+```
+
+This is the most important performance change before increasing `beam-width`.
+
+---
+
+## Revised beam algorithm
+
+The beam should become:
+
+```python
+for depth in range(max_depth):
+    pair_pool = build_pair_pool(seeds, known, frontier)
+
+    index = build_minor_shape_index(pair_pool)
+
+    candidate_pairs = []
+
+    majors = top_k(
+        [p for p in pair_pool if implication_major_parts(p) is not None],
+        key=lambda p: major_priority(p, target, regions),
+        k=major_budget,
+    )
+
+    for major in majors:
+        antecedent, _ = implication_major_parts(major)
+        minors = compatible_minor_candidates(antecedent, pair_pool, index)
+
+        for minor in minors:
+            priority = pair_priority(major, minor, target, regions)
+            if priority is finite:
+                candidate_pairs.append((priority, major, minor))
+
+    for _, major, minor in top_k(candidate_pairs, k=beam_pair_budget):
+        candidate = try_make_cd(major, minor)
+        if candidate is valid:
+            collect candidate
+
+    split candidates into:
+        closed candidates
+        schematic candidates
+
+    keep top closed candidates by target/region score
+    keep top schematic candidates by schema score + novelty
+
+    update frontier
+```
+
+Preserve the existing closed/schematic ranking after candidates are generated. The new heuristic is for reducing pair attempts before CD, not for replacing candidate ranking after CD.
 
 ---
 
@@ -191,7 +661,7 @@ Do not keep adding one-off penalties for each new bad-looking proof shape. The r
 
 The input theorem is closed. Therefore the final accepted proof must have a closed conclusion exactly equal to the core target.
 
-Add or maintain:
+Maintain:
 
 ```python
 metas(formula) -> set[Meta]
@@ -206,12 +676,6 @@ closed formula:
 
 schematic formula:
   contains one or more Meta variables
-
-closed candidate:
-  valid proof whose conclusion is closed
-
-schematic candidate:
-  valid proof whose conclusion contains one or more Meta variables
 ```
 
 Rules:
@@ -229,11 +693,9 @@ A valid schematic theorem is not a valid proof of the input theorem.
 
 ## Schema instantiation
 
-The search frequently discovers useful open schemata. These should be treated as reusable lemma schemas, not as direct target candidates.
+Keep schema instantiation as a priority, but after the benchmark targets and pair preselection.
 
-Add a schema-instantiation operation.
-
-Suggested operation:
+Useful operation:
 
 ```text
 instantiate_meta_from_pool
@@ -249,21 +711,7 @@ Behavior:
 5. if the result is closed or closer to closed, evaluate it as a closed/partially closed candidate
 ```
 
-Example:
-
-```text
-schema candidate:
-  (b → ?p) → b → ?p
-
-try:
-  ?p := a
-  ?p := b
-  ?p := ¬(a → ¬b)
-  ?p := ¬(b → ¬a)
-  ?p := a → ¬b
-```
-
-Also add direct schema-target matching:
+Also support direct schema-target matching:
 
 ```text
 if unify(schema_conclusion, target_or_region) succeeds:
@@ -278,8 +726,6 @@ If unification fails, keep the candidate in the schema archive rather than allow
 ## Quality-diversity selection
 
 The search should not rely on one scalar fitness score as the only survival mechanism.
-
-A scalar score is useful for reporting and local ranking, but population survival should preserve multiple roles.
 
 Use separate elite buckets:
 
@@ -310,272 +756,13 @@ For population size 100, a reasonable first allocation is:
 20 random immigrants / high-mutation candidates
 ```
 
-The exact allocation can be configurable. The important rule is:
+The exact allocation can be configurable.
+
+The important rule is:
 
 ```text
 Do not let a single scalar score define the whole next generation.
 ```
-
----
-
-## Behavior descriptors and novelty
-
-Add a behavior descriptor for each valid candidate.
-
-Suggested fields:
-
-```python
-BehaviorDescriptor(
-    closed: bool,
-    root_symbol: str,
-    implication_spine_length: int,
-    final_head_shape: str,
-    atom_set: frozenset[str],
-    meta_count: int,
-    cd_steps: int,
-    substantive_cd_steps: int,
-    proof_depth: int,
-    axiom_counts: tuple[int, int, int],
-    normalized_skeleton: str,
-)
-```
-
-Use descriptors to compute novelty.
-
-Simple novelty score:
-
-```python
-novelty(candidate) =
-    average distance to k nearest behavior descriptors in the behavior archive
-```
-
-Distance can be approximate and feature-based:
-
-```text
-+ closed/schematic mismatch
-+ difference in implication spine length
-+ difference in meta count
-+ difference in CD depth
-+ difference in substantive CD steps
-+ difference in axiom-count vector
-+ final-head-shape mismatch
-+ Jaccard distance between atom sets
-+ skeleton mismatch penalty
-```
-
-This does not need to be perfect. The goal is to prevent one compact proof family from occupying the population for hundreds of generations.
-
----
-
-## Deterministic or semi-deterministic CD beam search
-
-Pure genetic programming is too stochastic for Hilbert/CD proof search.
-
-Add a deterministic or semi-deterministic CD closure/beam mode.
-
-Basic idea:
-
-```text
-1. seed with target-derived axiom instances
-2. for depth d:
-     try CD on promising ordered proof pairs
-     keep top K closed candidates
-     keep top K schematic candidates
-3. use the resulting proof pool to seed or mix the GP population
-```
-
-Pseudo-code:
-
-```python
-known_closed = {}
-known_schematic = {}
-
-frontier = seeded_axiom_instances(target, regions)
-
-for depth in range(max_depth):
-    new = []
-
-    for major in promising_majors(frontier, known_closed, known_schematic):
-        for minor in promising_minors(frontier, known_closed, known_schematic):
-            candidate = try_make_cd(major, minor)
-            if candidate is valid:
-                new.append(candidate)
-
-    closed_new = [
-        p for p in new
-        if is_closed_formula(conclusion(p))
-    ]
-
-    schematic_new = [
-        p for p in new
-        if not is_closed_formula(conclusion(p))
-    ]
-
-    keep top K closed_new by target/region score
-    keep top K schematic_new by schema score + novelty
-
-    update frontier
-```
-
-The CD beam should be able to reproduce tiny known proofs such as `DD211` for `p → p`.
-
-The GP layer can then mutate, crossover, and instantiate around the beam-generated pool.
-
----
-
-## D-proof verification/import
-
-Add a parser/verifier for condensed-detachment proof strings.
-
-Notation:
-
-```text
-1 = Ax1
-2 = Ax2
-3 = Ax3
-D = condensed detachment
-```
-
-Example:
-
-```text
-DD211
-```
-
-means:
-
-```text
-D(D(2, 1), 1)
-```
-
-Add a command such as:
-
-```bash
-python -m birdrat_proplogic.verify_d "DD211"
-```
-
-Expected behavior:
-
-```text
-- parse the D-expression
-- expand leaves as Ax1/Ax2/Ax3 schemas
-- compute the conclusion using CD
-- print the derived formula
-- confirm that DD211 derives p → p, up to variable renaming
-```
-
-This gives the project concrete known proof examples independent of the GP loop.
-
-Once this works, add support for importing small proof databases such as Metamath-style `pmproofs.txt` condensed-detachment examples.
-
----
-
-## Fitness function guidance
-
-The current scalar fitness function includes many useful components:
-
-```text
-exact target match
-exact generated-region match
-directed implication-spine similarity
-old symbolic/tree similarity
-assumption debt
-projection detection
-vacuous weakening detection
-substantive CD scoring
-proof-size penalty
-formula-size penalty
-depth penalty
-```
-
-Keep these as target-directed scoring features.
-
-But do not expect the scalar fitness function to solve population management by itself.
-
-Use it mainly for:
-
-```text
-ranking closed target candidates
-ranking closed region candidates
-ranking candidate quality within an elite bucket
-```
-
-Do not use the same target-directed scalar as the only survival criterion for schematic lemmas, novelty elites, and random exploratory candidates.
-
----
-
-## Schematic lemma scoring
-
-Schematic candidates should be scored separately from closed target candidates.
-
-Useful schematic candidates are:
-
-```text
-valid
-compact
-not pure vacuous weakening
-not already common in the schema archive
-instantiable against target/region subformulas
-built using substantive CD steps
-```
-
-A schematic theorem is especially useful if it can be instantiated into a closed formula close to the target or a generated region.
-
-Schematic scoring should prefer reusable lemmas, but schematic candidates should not be allowed to masquerade as proofs of the target.
-
----
-
-## Mutation priorities
-
-Useful mutation operators now include:
-
-```text
-subtree replacement
-axiom replacement
-formula argument mutation
-CD child replacement
-major/minor swap
-random target-seeded subtree insertion
-instantiate_meta_from_pool
-close_schema_candidate
-```
-
-The most important new operators are:
-
-```text
-instantiate_meta_from_pool:
-  replace a Meta variable with a target/region formula
-
-close_schema_candidate:
-  repeatedly instantiate metas from the formula pool until the conclusion is closed or closer to closed
-```
-
-This helps convert discovered schemata into closed theorem candidates.
-
----
-
-## Archive design
-
-Maintain separate archives:
-
-```text
-target_archive:
-  best closed proofs near the full target
-
-region_archive:
-  best closed proofs for generated regions
-
-schema_archive:
-  compact valid schematic lemmas
-
-behavior_archive:
-  behavior descriptors for novelty computation
-
-dproof_archive:
-  imported known condensed-detachment proofs
-```
-
-Do not let the schema archive replace closed target search. It is supporting material.
 
 ---
 
@@ -599,6 +786,10 @@ unique_behavior_count
 behavior_archive_size
 schema_archive_size
 random_immigrant_count
+beam_pool_size
+beam_pair_attempts
+beam_pair_budget
+beam_layer_counts
 mean_cd_steps
 mean_substantive_cd_steps
 mean_cd_depth
@@ -606,7 +797,16 @@ mean_proof_size
 mean_formula_size
 ```
 
-A healthy run should not report the same schematic conclusion as the only best candidate for hundreds of generations unless the run is intentionally doing lemma-schema discovery.
+Beam-specific diagnostics are important now. Report:
+
+```text
+how many major candidates were considered
+how many compatible minor candidates were found
+how many CD pairs were attempted
+how many valid CD products were produced
+how many closed products survived
+how many schematic products survived
+```
 
 ---
 
@@ -615,16 +815,24 @@ A healthy run should not report the same schematic conclusion as the only best c
 Implement the next changes in this order:
 
 ```text
-1. Add/finish metas(formula) and is_closed_formula(formula).
-2. Add schema instantiation from substitutions and formula-pool replacements.
-3. Add D-proof parser/verifier for strings like DD211.
-4. Add identity benchmark p → p and verify DD211.
-5. Add deterministic/semi-deterministic CD beam search.
-6. Add quality-diversity selection buckets.
-7. Add behavior descriptors and novelty archive.
-8. Add close-schema mutation operators.
-9. Return to encoded conjunction benchmarks only after p → p is reliable.
+1. Add the 5 target-only search benchmarks.
+2. Add a benchmark command that runs search on those 5 targets.
+3. Confirm p → p remains solvable through search.
+4. Add target-directed CD pair preselection.
+5. Add beam_pair_budget and beam diagnostics.
+6. Try to solve the 5 targets through search.
+7. Add schema instantiation from substitutions and formula-pool replacements.
+8. Strengthen quality-diversity selection only after the benchmark suite is stable.
+9. Return to encoded conjunction benchmarks only after the small target suite is reliable.
 ```
+
+Encoded conjunction projection:
+
+```text
+p ∧ q → p
+```
+
+should wait until the tool handles the small target-only benchmark suite.
 
 ---
 
@@ -638,15 +846,17 @@ Mathlib integration
 native Lean AST parsing
 natural-deduction tactics
 surface-level conjunction elimination as a primitive rule
+hardcoded known proofs
+proof-string replay as a benchmark
+large external proof database ingestion
 more one-off bad-shape penalties
-large external proof database ingestion before DD211 works
 ```
 
 The next milestone is small and concrete:
 
 ```text
-Verify and reproduce p → p from DD211.
-Then use that proof as a known benchmark for search.
+Use search to solve a small suite of known-small theorem targets.
+Do not provide the search with the known proofs.
 ```
 
 ---
@@ -656,27 +866,16 @@ Then use that proof as a known benchmark for search.
 Current issue:
 
 ```text
-The system discovers valid schematic Hilbert facts but fails to instantiate them into closed target proofs.
+The beam can prove p → p, but larger widths are too slow because CD pair generation is too close to O(n²).
 ```
 
 Near-term fix:
 
 ```text
-closed/schematic separation
-+ schema instantiation
-+ D-proof verification
-+ CD beam search
-+ quality-diversity selection
+small target-only benchmark suite
++ benchmark command
++ target-directed CD pair preselection
++ beam pair budget
 ```
 
-First benchmark:
-
-```text
-p → p
-```
-
-Known CD proof:
-
-```text
-DD211
-```
+Do not return to encoded conjunction until the beam can reliably search for several small known theorem targets.

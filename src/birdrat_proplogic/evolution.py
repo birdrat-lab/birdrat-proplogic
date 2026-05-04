@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from random import Random
 
 from birdrat_proplogic.archive import ProofArchive, empty_archive, update_archive
-from birdrat_proplogic.beam import cd_beam_search
+from birdrat_proplogic.beam import BeamDiagnostics, cd_beam_search_result
 from birdrat_proplogic.config import DEFAULT_CONFIG, ProplogicConfig
 from birdrat_proplogic.crossover import crossover_proof
 from birdrat_proplogic.fitness import FitnessResult, total_fitness
@@ -58,6 +58,10 @@ class GenerationStats:
     schema_archive_size: int
     random_immigrant_count: int
     beam_pool_size: int
+    beam_pair_attempts: int
+    beam_pair_budget: int
+    beam_valid_products: int
+    beam_layer_counts: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,7 @@ class EvolutionResult:
     best: ScoredProof
     history: tuple[GenerationStats, ...]
     diagnostics_interval: int
+    beam_diagnostics: BeamDiagnostics
 
 
 def evolve(
@@ -87,7 +92,8 @@ def evolve(
     active_config = _config_for_depth(config, active_depth)
     region_targets = tuple(region.core_theorem() for region in regions)
     formula_pool = formula_pool_from_target(core_target, region_targets)
-    beam_pool = cd_beam_search(core_target, regions, formula_pool, active_config)
+    beam_result = cd_beam_search_result(core_target, regions, formula_pool, active_config)
+    beam_pool = beam_result.proofs
     population = tuple(
         initialize_population_from_target(
             random,
@@ -114,7 +120,17 @@ def evolve(
         scored = _score_population(population, core_target, regions, active_config)
         archive = update_archive(archive, _archive_items(scored), active_config)
         best = max(best, scored[0], key=lambda item: item.fitness.score)
-        history.append(_generation_stats(generation, active_depth, scored, quality_archives, last_selection, len(beam_pool)))
+        history.append(
+            _generation_stats(
+                generation,
+                active_depth,
+                scored,
+                quality_archives,
+                last_selection,
+                len(beam_pool),
+                beam_result.diagnostics,
+            )
+        )
 
         if evolution_config.stop_on_exact and scored[0].fitness.exact_target:
             break
@@ -156,6 +172,7 @@ def evolve(
         best=best,
         history=tuple(history),
         diagnostics_interval=evolution_config.diagnostics_interval,
+        beam_diagnostics=beam_result.diagnostics,
     )
 
 
@@ -240,6 +257,7 @@ def _generation_stats(
     quality_archives: QualityArchives,
     selection: QualitySelectionResult,
     beam_pool_size: int,
+    beam_diagnostics: BeamDiagnostics,
 ) -> GenerationStats:
     best = scored[0]
     best_conclusion = best.fitness.conclusion
@@ -282,6 +300,19 @@ def _generation_stats(
         schema_archive_size=len(quality_archives.schema_archive),
         random_immigrant_count=len(selection.random_immigrants),
         beam_pool_size=beam_pool_size,
+        beam_pair_attempts=beam_diagnostics.pair_attempts,
+        beam_pair_budget=beam_diagnostics.pair_budget,
+        beam_valid_products=beam_diagnostics.valid_products,
+        beam_layer_counts=tuple(_format_beam_layer(layer) for layer in beam_diagnostics.layer_counts),
+    )
+
+
+def _format_beam_layer(layer) -> str:
+    return (
+        f"d{layer.depth}:pool={layer.pair_pool_size},majors={layer.major_candidates},"
+        f"compatible={layer.compatible_minor_candidates},attempts={layer.pair_attempts},"
+        f"valid={layer.valid_products},closed={layer.closed_products},schematic={layer.schematic_products},"
+        f"closed_keep={layer.closed_survivors},schematic_keep={layer.schematic_survivors}"
     )
 
 
